@@ -1,0 +1,363 @@
+"""Stage 2: Judge-based filtering + embedding-based dedup."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from .chunker import load_chunks
+from .llm import LLMError, generate as llm_generate
+from .prompts import load_prompt
+from .schema import FilterScores, QAItem
+
+DEFAULT_PROMPT = "prompts/judge.md"
+
+# Threshold defaults (1-5 scales, higher is better).
+DEFAULT_ANSWERABILITY_MIN = 4.0
+DEFAULT_GROUNDING_MIN = 4.0
+DEFAULT_UNIQUENESS_MAX = 0.92  # cosine similarity above this = duplicate
+
+# Perspective ids used in prompts/judge.md
+PERSPECTIVES = [
+    "ANSWERABILITY",
+    "LEAKAGE",
+    "GROUNDING",
+    "DIFFICULTY_MATCH",
+]
+# Note: RATIONALE_COMPLETENESS was removed — it duplicated GROUNDING and the
+# returned score was discarded anyway (no field in FilterScores).
+
+
+# ---------- prompt section extraction ----------
+
+_SECTION_RE = re.compile(
+    r"^##\s*\[(?P<name>[A-Z_]+)\]\s*\n(?P<body>.*?)(?=^##\s*\[|^---\s*$|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def _split_perspectives(judge_body: str) -> dict[str, str]:
+    """Return {PERSPECTIVE: section_body} from the shared judge.md."""
+    return {m.group("name"): m.group("body").strip() for m in _SECTION_RE.finditer(judge_body)}
+
+
+def _build_judge_prompt(
+    name: str,
+    section: str,
+    qa: QAItem,
+    anchor_chunks: list[tuple[str, Optional[int], str]],
+) -> str:
+    if len(anchor_chunks) <= 1:
+        chunk_block = anchor_chunks[0][2] if anchor_chunks else "(該当チャンクなし)"
+        anchor_section = f"[元チャンク]\n{chunk_block}"
+    else:
+        parts = [f"[元チャンク {len(anchor_chunks)}個 — すべてQAの根拠候補]"]
+        for i, (doc_id, page, text) in enumerate(anchor_chunks, 1):
+            page_str = f"p.{page}" if page is not None else "p.?"
+            parts.append(f"--- 元チャンク {i}/{len(anchor_chunks)} ({doc_id} {page_str}) ---\n{text}")
+        anchor_section = "\n\n".join(parts)
+    input_block = (
+        f"[質問]\n{qa.question}\n\n"
+        f"[回答]\n{qa.answer}\n\n"
+        f"[rationale]\n"
+        + "\n".join(f"- ({r.doc_id}:{r.page}) {r.text}" for r in qa.rationale)
+        + f"\n\n{anchor_section}"
+    )
+    return f"## [{name}]\n\n{section}\n\n{input_block}"
+
+
+_CHUNK_ID_SUFFIX_RE = re.compile(r"__c\d+$")
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_doc_id(raw: str) -> str:
+    """LLM sometimes echoes a chunk_id ('foo__c0154') as doc_id. Strip suffix."""
+    return _CHUNK_ID_SUFFIX_RE.sub("", raw)
+
+
+def _normalize_for_match(s: str) -> str:
+    """Strip whitespace for substring comparison (LLM often reflows whitespace)."""
+    return _WS_RE.sub("", s)
+
+
+def compute_rationale_grounded(
+    qa: QAItem,
+    anchor_chunks: list[tuple[str, Optional[int], str]],
+) -> float:
+    """Return fraction of rationale entries whose .text appears verbatim (after
+    whitespace normalization) in some anchor chunk. 1.0 = all grounded."""
+    if not qa.rationale:
+        return 0.0
+    # Concatenate anchor chunk texts; LLM should quote from any of them
+    anchor_blob = "".join(_normalize_for_match(text) for _, _, text in anchor_chunks)
+    if not anchor_blob:
+        return 0.0
+    matched = 0
+    for r in qa.rationale:
+        needle = _normalize_for_match(r.text)
+        if needle and needle in anchor_blob:
+            matched += 1
+    return matched / len(qa.rationale)
+
+
+def _find_chunk_texts(
+    qa: QAItem,
+    chunk_index: dict[tuple[str, Optional[int]], str],
+    full_chunks: list,
+) -> list[tuple[str, Optional[int], str]]:
+    """Return one anchor chunk per rationale entry (deduped).
+
+    Lookup strategy per rationale:
+      1. (doc_id, page) exact match
+      2. doc_id with chunk_id suffix stripped + page
+      3. chunk_id direct match (if rationale.doc_id is actually a chunk_id)
+      4. any chunk in the same normalized doc_id
+    """
+    # Build chunk_id → (doc_id, page, text) for case 3
+    by_chunk_id: dict[str, tuple[str, Optional[int], str]] = {
+        c.chunk_id: (c.doc_id, c.page, c.text) for c in full_chunks
+    }
+    # Build doc_id → list of chunks for case 4
+    by_doc: dict[str, list[tuple[str, Optional[int], str]]] = {}
+    for c in full_chunks:
+        by_doc.setdefault(c.doc_id, []).append((c.doc_id, c.page, c.text))
+
+    out: list[tuple[str, Optional[int], str]] = []
+    seen: set[tuple[str, Optional[int]]] = set()
+
+    for r in qa.rationale:
+        # case 1: exact
+        key = (r.doc_id, r.page)
+        text = chunk_index.get(key)
+        if text:
+            if key not in seen:
+                out.append((r.doc_id, r.page, text))
+                seen.add(key)
+            continue
+        # case 2: normalize doc_id
+        norm_doc = _normalize_doc_id(r.doc_id)
+        key2 = (norm_doc, r.page)
+        text = chunk_index.get(key2)
+        if text:
+            if key2 not in seen:
+                out.append((norm_doc, r.page, text))
+                seen.add(key2)
+            continue
+        # case 3: rationale.doc_id IS a chunk_id
+        if r.doc_id in by_chunk_id:
+            doc_id, page, txt = by_chunk_id[r.doc_id]
+            key3 = (doc_id, page)
+            if key3 not in seen:
+                out.append((doc_id, page, txt))
+                seen.add(key3)
+            continue
+        # case 4: any chunk in normalized doc
+        if norm_doc in by_doc:
+            doc_id, page, txt = by_doc[norm_doc][0]
+            key4 = (doc_id, page)
+            if key4 not in seen:
+                out.append((doc_id, page, txt))
+                seen.add(key4)
+            continue
+
+    if out:
+        return out
+    # last-resort fallback
+    if qa.rationale:
+        target_doc = _normalize_doc_id(qa.rationale[0].doc_id)
+        for (doc_id, page), text in chunk_index.items():
+            if doc_id == target_doc:
+                return [(doc_id, page, text)]
+    return [("(unknown)", None, "(該当チャンクなし)")]
+
+
+# ---------- LLM-based scoring ----------
+
+LLMCaller = Callable[..., Any]
+
+
+_LEVEL_ORDER = {"Easy": 0, "Medium": 1, "Hard": 2}
+
+
+def _difficulty_match(declared: str, measured: str) -> Optional[str]:
+    """宣言済み answer_level と判定LLMの実態レベルのズレをタグ化。"""
+    if declared not in _LEVEL_ORDER or measured not in _LEVEL_ORDER:
+        return None
+    d, m = _LEVEL_ORDER[declared], _LEVEL_ORDER[measured]
+    if m == d:
+        return "aligned"
+    return "too_easy" if m < d else "too_hard"
+
+
+def _parse_json_safely(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    from .llm import _parse_json
+
+    parsed = _parse_json(raw) if isinstance(raw, str) else raw
+    if not isinstance(parsed, dict):
+        raise LLMError(f"Expected JSON object, got {type(parsed).__name__}")
+    return parsed
+
+
+def score_qa(
+    qa: QAItem,
+    anchor_chunks: list[tuple[str, Optional[int], str]],
+    *,
+    model: str,
+    perspectives: dict[str, str],
+    llm: LLMCaller,
+) -> FilterScores:
+    """Run each judge perspective and collate into FilterScores."""
+    scores = FilterScores()
+    for name in PERSPECTIVES:
+        section = perspectives.get(name)
+        if not section:
+            continue
+        prompt = _build_judge_prompt(name, section, qa, anchor_chunks)
+        try:
+            raw = llm(prompt=prompt, model=model, response_model=None, temperature=0.0)
+            data = _parse_json_safely(raw)
+        except (LLMError, json.JSONDecodeError) as e:
+            print(f"[filter] judge {name} failed: {e}")
+            continue
+
+        if name == "ANSWERABILITY" and "answerability" in data:
+            scores.answerability = float(data["answerability"])
+        elif name == "LEAKAGE" and data.get("leakage") in ("pass", "fail"):
+            scores.leakage = data["leakage"]
+        elif name == "GROUNDING" and "grounding" in data:
+            scores.grounding = float(data["grounding"])
+        elif name == "DIFFICULTY_MATCH" and data.get("answer_level") in (
+            "Easy", "Medium", "Hard"
+        ):
+            measured = data["answer_level"]
+            # 宣言値 (生成時の暫定) と実態のズレをタグ化してから、実態で確定する。
+            scores.difficulty_match = _difficulty_match(qa.answer_level, measured)
+            qa.answer_level = measured
+    return scores
+
+
+# ---------- duplicate detection ----------
+
+def _compute_uniqueness(qas: list[QAItem]) -> list[float]:
+    """Return max cosine similarity against any other QA in the batch (0..1).
+
+    Uses the vLLM-hosted embedding endpoint (VLLM_EMBEDDING_ENDPOINT +
+    VLLM_EMBEDDING_MODEL).
+    """
+    try:
+        import numpy as np  # type: ignore
+    except ImportError as e:
+        print(f"[filter] uniqueness skipped (numpy missing): {e}")
+        return [0.0] * len(qas)
+
+    from .llm import embed
+
+    texts = [qa.question for qa in qas]
+    try:
+        vectors = embed(texts)
+    except Exception as e:
+        print(f"[filter] uniqueness skipped (embedding endpoint failed): {e}")
+        return [0.0] * len(qas)
+
+    emb = np.array(vectors, dtype=float)
+    norms = np.linalg.norm(emb, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    emb = emb / norms
+    sim = emb @ emb.T
+    np.fill_diagonal(sim, 0.0)
+    return sim.max(axis=1).tolist()
+
+
+# ---------- public entry ----------
+
+def filter_batch(
+    raw_path: Path,
+    out_dir: Path,
+    chunks_dir: Path,
+    *,
+    judge_model: str,
+    prompt_path: Path = Path(DEFAULT_PROMPT),
+    llm: Optional[LLMCaller] = None,
+    answerability_min: float = DEFAULT_ANSWERABILITY_MIN,
+    grounding_min: float = DEFAULT_GROUNDING_MIN,
+    uniqueness_max: float = DEFAULT_UNIQUENESS_MAX,
+    rationale_grounded_min: float = 1.0,
+    compute_uniqueness: bool = True,
+    require_leakage_pass: bool = True,
+) -> Path:
+    """Score each QA with judge LLM + dedup, drop failures, write filtered JSONL."""
+    _, body = load_prompt(str(prompt_path))
+    perspectives = _split_perspectives(body)
+
+    # Load and index chunks for per-QA lookup.
+    # 同一 (doc_id, page) に複数チャンクがあるため、ページ単位で全チャンク本文を
+    # 連結して持つ。1チャンクだけ残す実装だと、根拠が同ページの別チャンクにある
+    # ときに逐語照合が誤って外れる (モデル就業規則は1ページ最大6チャンク)。
+    chunks = load_chunks(chunks_dir) if chunks_dir.exists() else []
+    chunk_index: dict[tuple[str, Optional[int]], str] = {}
+    for c in chunks:
+        key = (c.doc_id, c.page)
+        if key in chunk_index:
+            chunk_index[key] += "\n" + c.text
+        else:
+            chunk_index[key] = c.text
+
+    # Load QAs
+    qas: list[QAItem] = []
+    with raw_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                qas.append(QAItem.model_validate_json(line))
+
+    caller = llm or llm_generate
+
+    # Score each QA (LLM perspectives + deterministic rationale grounding)
+    for qa in qas:
+        anchor_chunks = _find_chunk_texts(qa, chunk_index, chunks)
+        qa.filter_scores = score_qa(
+            qa, anchor_chunks, model=judge_model, perspectives=perspectives, llm=caller
+        )
+        # Deterministic check: does rationale.text actually appear in the chunks?
+        qa.filter_scores.rationale_grounded = compute_rationale_grounded(qa, anchor_chunks)
+
+    # Compute uniqueness (1 - max similarity against other items)
+    if compute_uniqueness and len(qas) > 1:
+        sims = _compute_uniqueness(qas)
+        for qa, s in zip(qas, sims):
+            qa.filter_scores.uniqueness = 1.0 - float(s)
+
+    # Apply thresholds
+    kept: list[QAItem] = []
+    for qa in qas:
+        fs = qa.filter_scores
+        reasons: list[str] = []
+        if fs.answerability is not None and fs.answerability < answerability_min:
+            reasons.append(f"answerability={fs.answerability}")
+        if require_leakage_pass and fs.leakage == "fail":
+            reasons.append("leakage=fail")
+        if fs.grounding is not None and fs.grounding < grounding_min:
+            reasons.append(f"grounding={fs.grounding}")
+        if fs.uniqueness is not None and fs.uniqueness < (1.0 - uniqueness_max):
+            reasons.append(f"uniqueness={fs.uniqueness:.3f}")
+        if fs.rationale_grounded is not None and fs.rationale_grounded < rationale_grounded_min:
+            reasons.append(f"rationale_grounded={fs.rationale_grounded:.2f}")
+        if reasons:
+            print(f"[filter] drop {qa.qa_id}: {', '.join(reasons)} (scores={fs.model_dump()})")
+            continue
+        print(f"[filter] keep {qa.qa_id}: scores={fs.model_dump()}")
+        kept.append(qa)
+
+    # Write filtered
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / raw_path.name
+    with out_path.open("w", encoding="utf-8") as f:
+        for qa in kept:
+            f.write(qa.model_dump_json() + "\n")
+
+    print(f"[filter] kept {len(kept)}/{len(qas)} QAs → {out_path}")
+    return out_path

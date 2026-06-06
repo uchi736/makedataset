@@ -1,0 +1,40 @@
+[project]
+name = "rageval"
+version = "0.1.0"
+description = "Semi-automatic RAG evaluation dataset builder"
+readme = "README.md"
+authors = [
+    { name = "uchi", email = "j237015w@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "openai>=1.40",
+    "anthropic>=0.34",
+    "tenacity>=8.3",
+    "python-dotenv>=1.0",
+    "streamlit>=1.36",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "altair>=5.3",
+    "pypdf>=4.0",
+    "azure-ai-documentintelligence>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+]
+
+[project.scripts]
+rageval = "rageval.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.8.5,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
