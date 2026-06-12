@@ -18,7 +18,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from rageval.aspects import ASPECT_DESCRIPTIONS, ASPECT_EXAMPLES, ASPECT_LABELS
+from rageval.aspects import ASPECT_DESCRIPTIONS, ASPECT_LABELS
 from rageval.chunker import load_chunks
 from rageval.schema import Chunk, QAItem
 
@@ -107,7 +107,6 @@ def _render_checkpoints(qa: QAItem) -> None:
     )
 
 
-_DIFF_BADGE_COLOR = {"Easy": "green", "Medium": "orange", "Hard": "red"}
 _CATEGORY_LABELS = {
     "Integration": "統合",
     "Reasoning":   "推論",
@@ -115,105 +114,6 @@ _CATEGORY_LABELS = {
     "Figure":      "図表",
     "Abstention":  "棄権",
 }
-
-
-def _render_framing_banner(qa: QAItem) -> None:
-    """Big top banner: what aspect/category/difficulty this QA tests.
-
-    KG-PoC track の QA (`kg_query_type` がセットされてる) は、
-    観点・カテゴリではなく KG用 3軸 (クエリ型 / 未知性 / LLM既知性) を表示する。
-    """
-    is_kg = qa.kg_query_type is not None or qa.kg_novelty is not None
-
-    if is_kg:
-        _render_framing_banner_kg(qa)
-    else:
-        _render_framing_banner_general(qa)
-
-    # 難易度根拠 + 診断軸タグ (両 track 共通)
-    diag = _summarize_diagnostic_tags(qa)
-    info_parts = []
-    if qa.difficulty_rationale:
-        info_parts.append(f":material/info: **難易度根拠**: {qa.difficulty_rationale}")
-    if diag:
-        info_parts.append(f":material/insights: **期待される推論/検索/構造**:\n{diag}")
-    if info_parts:
-        st.markdown("  \n".join(info_parts))
-
-
-def _render_framing_banner_general(qa: QAItem) -> None:
-    """General track (25観点)向けのフレーミング."""
-    aspects_display = " / ".join(f"**{ASPECT_LABELS.get(a, a)}**" for a in qa.aspect)
-    cat_display = " · ".join(f"{_CATEGORY_LABELS.get(c, c)} ({c})" for c in qa.category)
-
-    st.markdown("##### このQAは何を測るために作られたのか  `[general track]`")
-    cols = st.columns([2, 1, 1, 1])
-    cols[0].markdown(f"**観点**\n\n{aspects_display or '(指定なし)'}")
-    cols[1].markdown(f"**カテゴリ**\n\n{cat_display or '(指定なし)'}")
-    cols[2].markdown(
-        f"**検索難易度**\n\n:{_DIFF_BADGE_COLOR.get(qa.retrieval_level, 'gray')}[{qa.retrieval_level}]"
-    )
-    cols[3].markdown(
-        f"**回答難易度**\n\n:{_DIFF_BADGE_COLOR.get(qa.answer_level, 'gray')}[{qa.answer_level}]"
-    )
-    st.caption(f"qa_id: `{qa.qa_id}`")
-
-    for a in qa.aspect:
-        label = ASPECT_LABELS.get(a, a)
-        desc = ASPECT_DESCRIPTIONS.get(a, "(定義なし)")
-        ex = ASPECT_EXAMPLES.get(a, "")
-        st.info(
-            f"**観点「{label}」 (`{a}`) を満たす質問になっているか?**  \n"
-            f":material/lightbulb: **定義**: {desc}  \n"
-            f":material/business_center: **現場例**: {ex}",
-            icon=":material/target:",
-        )
-
-
-def _render_framing_banner_kg(qa: QAItem) -> None:
-    """KG-PoC track 向けのフレーミング (3軸タグ表示)."""
-    from rageval.tracks.kg_poc import (
-        KG_NOVELTY_DESCRIPTIONS,
-        KG_NOVELTY_LABELS,
-        KG_QUERY_TYPE_DESCRIPTIONS,
-        KG_QUERY_TYPE_LABELS,
-        LLM_KNOWLEDGE_LABELS,
-    )
-
-    qt = qa.kg_query_type or ""
-    nov = qa.kg_novelty or ""
-    qt_label = KG_QUERY_TYPE_LABELS.get(qt, qt or "(未指定)")
-    nov_label = KG_NOVELTY_LABELS.get(nov, nov or "(未指定)")
-    llm_k = qa.llm_knowledge
-    llm_k_label = LLM_KNOWLEDGE_LABELS.get(llm_k, "(未プロービング)") if llm_k else "(未プロービング)"
-
-    st.markdown(f"##### このQAは何を測るために作られたのか  `[kg_poc track]`")
-    cols = st.columns([2, 2, 1, 1, 1])
-    cols[0].markdown(f"**クエリ型**\n\n**{qt_label}** (`{qt}`)")
-    cols[1].markdown(f"**未知性**\n\n**{nov_label}** (`{nov}`)")
-    cols[2].markdown(
-        f"**LLM既知性**\n\n{'**:red[' + llm_k_label + ']**' if llm_k == 'unknown' else llm_k_label}"
-    )
-    cols[3].markdown(
-        f"**検索難易度**\n\n:{_DIFF_BADGE_COLOR.get(qa.retrieval_level, 'gray')}[{qa.retrieval_level}]"
-    )
-    cols[4].markdown(
-        f"**回答難易度**\n\n:{_DIFF_BADGE_COLOR.get(qa.answer_level, 'gray')}[{qa.answer_level}]"
-    )
-    st.caption(f"qa_id: `{qa.qa_id}`")
-
-    if qt:
-        st.info(
-            f"**クエリ型「{qt_label}」 (`{qt}`) の意図に合った質問か?**  \n"
-            f":material/lightbulb: {KG_QUERY_TYPE_DESCRIPTIONS.get(qt, '')}",
-            icon=":material/help:",
-        )
-    if nov:
-        st.info(
-            f"**未知性「{nov_label}」 (`{nov}`) を満たすか?**  \n"
-            f":material/lightbulb: {KG_NOVELTY_DESCRIPTIONS.get(nov, '')}",
-            icon=":material/key:",
-        )
 
 
 def _summarize_diagnostic_tags(qa: QAItem) -> str:
@@ -234,32 +134,6 @@ def _summarize_diagnostic_tags(qa: QAItem) -> str:
     ev = qa.explainability.evidence_strictness
     lines.append(f"- 根拠厳密性: `{_EVIDENCE_LABEL.get(ev, ev)}`")
     return "\n".join(lines)
-
-
-def _render_diagnostic_tags(qa: QAItem) -> None:
-    """4軸の bool タグのうち true のものだけバッジ表示。"""
-    blocks = [
-        ("Reasoning", qa.reasoning_complexity.model_dump(), _DIAG_LABELS["reasoning_complexity"]),
-        ("Retrieval", qa.retrieval_difficulty.model_dump(), _DIAG_LABELS["retrieval_difficulty"]),
-        ("Structure", qa.source_structure.model_dump(), _DIAG_LABELS["source_structure"]),
-    ]
-    any_tag = False
-    for axis_name, dump, labels in blocks:
-        tags = [labels[k] for k, v in dump.items() if k in labels and v is True]
-        if not tags:
-            continue
-        any_tag = True
-        st.markdown(f"- **{axis_name}**: " + " / ".join(f"`{t}`" for t in tags))
-    # output_type は文字列(noneでなければ表示)
-    ot = qa.reasoning_complexity.output_type
-    if ot and ot != "none":
-        st.markdown(f"- **出力タイプ**: `{_OUTPUT_TYPE_LABEL.get(ot, ot)}`")
-        any_tag = True
-    # explainability
-    ev = qa.explainability.evidence_strictness
-    st.markdown(f"- **根拠厳密性**: `{_EVIDENCE_LABEL.get(ev, ev)}`")
-    if not any_tag:
-        st.caption("(Reasoning/Retrieval/Structure 軸に該当タグなし — 単純な抽出型QAの可能性)")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -430,98 +304,51 @@ def _find_orig_pos(text: str, stripped_target_pos: int) -> int:
     return len(text)
 
 
-def _render_identity_strip(qa: QAItem) -> None:
-    """Identify the QA via native Streamlit: caption with key-value pairs.
-
-    HTML chip 装飾はやめて、Streamlit の :color[text] と st.caption だけで
-    ダッシュボードのタブ感に揃える。
-    """
-    is_kg = qa.kg_query_type is not None or qa.kg_novelty is not None
-    diff_color = {"Easy": "green", "Medium": "orange", "Hard": "red"}
-    status_marker = {
-        "pending":  ":gray[● 未判定]",
-        "accepted": ":green[✓ 採用]",
-        "edited":   ":orange[✎ 修正済]",
-        "rejected": ":red[✕ 却下]",
-    }.get(qa.review_status, qa.review_status)
-
-    parts: list[str] = [
-        f"`{qa.qa_id}`",
-        f"track=`{'kg_poc' if is_kg else 'general'}`",
-    ]
-    if is_kg:
-        from rageval.tracks.kg_poc import (
-            KG_NOVELTY_LABELS,
-            KG_QUERY_TYPE_LABELS,
-            LLM_KNOWLEDGE_LABELS,
-        )
-        qt, nov = qa.kg_query_type or "", qa.kg_novelty or ""
-        parts.append(f"クエリ型: **{KG_QUERY_TYPE_LABELS.get(qt, qt)}**")
-        parts.append(f"未知性: :red[**{KG_NOVELTY_LABELS.get(nov, nov)}**]")
-        if qa.llm_knowledge:
-            llm_label = LLM_KNOWLEDGE_LABELS.get(qa.llm_knowledge, qa.llm_knowledge)
-            if qa.llm_knowledge == "unknown":
-                parts.append(f"LLM既知性: :red[**{llm_label}**]")
-            else:
-                parts.append(f"LLM既知性: {llm_label}")
-        else:
-            parts.append("LLM既知性: :gray[未プロービング]")
-    else:
-        cat = ", ".join(qa.category) if qa.category else "(なし)"
-        asp = ", ".join(qa.aspect) if qa.aspect else "(なし)"
-        parts.append(f"カテゴリ: **{cat}**")
-        parts.append(f"観点: **{asp}**")
-
-    parts.append(f"検索: :{diff_color.get(qa.retrieval_level, 'gray')}[{qa.retrieval_level}]")
-    parts.append(f"回答: :{diff_color.get(qa.answer_level, 'gray')}[{qa.answer_level}]")
-    parts.append(f"判定: {status_marker}")
-
-    st.caption(" ・ ".join(parts))
-
-
 def _checklist_groups(qa: QAItem) -> list[tuple[str, list[tuple[str, str, str]]]]:
     """Return [(group_name, [(key, label, description), ...]), ...].
 
-    General track と KG-PoC track で観点を変える。
+    **減点式**: 問題があるときだけチェックを入れる。チェック0件 = 指摘なし =
+    そのまま採用できる。General track と KG-PoC track で観点を変える。
     """
     is_kg = qa.kg_query_type is not None or qa.kg_novelty is not None
 
     if is_kg:
-        # KG-PoC専用チェックリスト: グラフ性 / 関係性 / RAG-差別性 を問う
         return [
             ("根拠の検証", [
-                ("c_q",  "質問が元チャンクから一意に導ける", "チャンクを読めば質問が成立"),
-                ("c_a",  "回答が元チャンクに事実根拠を持つ", "推測・外部知識に依存しない"),
-                ("c_r",  "根拠が元チャンクの部分文字列として現れる", "黄色ハイライト確認"),
+                ("f_inf", "回答が引用範囲を超えて推測している", "引用に無い事実・数値・結論を回答が含む"),
+                ("f_mis", "引用が原文と一致していない", "✗印の引用がある / 黄色の箇所と食い違う"),
+                ("f_irr", "根拠チャンクが質問と無関係", "別の話題のチャンクを根拠にしている"),
             ]),
             ("KG適性の検証", [
-                ("c_qt", "クエリ型タグが質問の構造と一致", "single/multi_hop/aggregation等が正しい"),
-                ("c_kg", "グラフ的アクセスが必要 (RAGの素朴検索では届かない)",
-                 "ベクター検索だけでは弱い問いになっている"),
-                ("c_ent","エンティティ・関係が文書中の実体である",
-                 "造語ではなく文書に登場する具体的な対象"),
-                ("c_nov","未知性タグが実態と合っている",
-                 "unknown_term/relation/procedural の定義通りか"),
+                ("f_single", "単一チャンク／キーワード一致で解けてしまう",
+                 "ベクター検索だけで届く問い (基準点用の single_fact なら指摘不要)"),
+                ("f_norel", "エンティティ間の関係をたどる必要がない",
+                 "規定→例外→条件のような辿りが無い"),
+                ("f_noagg", "集約・多段推論の要素がない",
+                 "クエリ型タグ (集約/マルチホップ等) に実態が伴わない"),
             ]),
             ("品質の検証", [
-                ("c_l",  "回答リーク・将来情報の混入なし", "質問に答え本体が含まれない"),
-                ("c_d",  "難易度タグ(検索/回答)が妥当", "根拠数や推論ステップと整合"),
+                ("f_amb", "質問が一意に解釈できない", "複数の読み方ができる / 対象が曖昧"),
+                ("f_ans", "回答に過不足がある", "誤り・抜け・余計な付け足し"),
+                ("f_diff", "難易度根拠が妥当でない", "難易度タグや説明が実態と合わない"),
             ]),
         ]
 
     # general track
     return [
         ("根拠の検証", [
-            ("c_q",  "質問が元チャンクから一意に導ける", "チャンクを読めば質問が成立"),
-            ("c_a",  "回答が元チャンクに事実根拠を持つ", "推測・外部知識に依存しない"),
-            ("c_r",  "根拠が元チャンクの部分文字列として現れる", "黄色ハイライト確認"),
+            ("f_inf", "回答が引用範囲を超えて推測している", "引用に無い事実・数値・結論を回答が含む"),
+            ("f_mis", "引用が原文と一致していない", "✗印の引用がある / 黄色の箇所と食い違う"),
+            ("f_irr", "根拠チャンクが質問と無関係", "別の話題のチャンクを根拠にしている"),
         ]),
         ("分類の検証", [
-            ("c_p",  "観点/タグの意図に合致している", "タグ通りの問いの構造になっている"),
+            ("f_asp", "観点・分類タグの意図に合っていない", "タグ通りの問いの構造になっていない"),
         ]),
         ("品質の検証", [
-            ("c_l",  "回答リーク・将来情報の混入なし", "質問に答え本体が含まれない"),
-            ("c_d",  "難易度タグ(検索/回答)が妥当", "根拠数や推論ステップと整合"),
+            ("f_amb", "質問が一意に解釈できない", "複数の読み方ができる / 対象が曖昧"),
+            ("f_ans", "回答に過不足がある", "誤り・抜け・余計な付け足し"),
+            ("f_leak", "質問に答えそのものが書かれている", "読むだけで解けてしまう (漏れ)"),
+            ("f_diff", "難易度タグが妥当でない", "検索/回答難易度が実態と合わない"),
         ]),
     ]
 
@@ -555,29 +382,28 @@ def render_review_panel(
     idx = max(0, min(idx, total - 1))
     qa = items[idx]
 
-    # Header (native): nav buttons + progress + status counts
+    # Header: 進捗バー + 判定の集計 + ナビ
     if show_header:
         counts = _status_counts(items)
-        h1, h2, h3 = st.columns([1, 4, 1])
-        with h1:
+        done = total - counts["pending"]
+        st.progress(done / total if total else 0, text=f"査読済み {done} / {total} 問")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("採用", counts["accepted"])
+        m2.metric("修正", counts["edited"])
+        m3.metric("却下", counts["rejected"])
+        m4.metric("未判定", counts["pending"])
+        nav1, nav2, nav3 = st.columns([1, 1, 4])
+        with nav1:
             if st.button("← 前へ", disabled=idx == 0, width="stretch", key=f"{key_prefix}_prev"):
                 st.session_state[idx_key] = idx - 1
                 st.rerun()
-        with h2:
-            st.progress(
-                (idx + 1) / total,
-                text=(
-                    f"{idx + 1} 問目 / 全 {total} 問    "
-                    f":green[採用 {counts['accepted']}]  "
-                    f":orange[修正 {counts['edited']}]  "
-                    f":red[却下 {counts['rejected']}]  "
-                    f":gray[未判定 {counts['pending']}]"
-                ),
-            )
-        with h3:
+        with nav2:
             if st.button("次へ →", disabled=idx >= total - 1, width="stretch", key=f"{key_prefix}_next"):
                 st.session_state[idx_key] = idx + 1
                 st.rerun()
+        with nav3:
+            st.caption(f"{idx + 1} 問目 / 全 {total} 問")
+        st.divider()
 
     _render_review_body(qa, items, idx, out_path, chunks_dir, reviewer, key_prefix=key_prefix)
 
@@ -645,18 +471,22 @@ def _render_review_body(
     total = len(items)
     idx_key = f"{key_prefix}_idx"
 
-    _render_identity_strip(qa)
+    # 現在の判定バッジ + ID。主役は質問と回答なので識別情報は1行に抑える
+    is_kg = qa.kg_query_type is not None or qa.kg_novelty is not None
+    badge = {
+        "pending":  "⚪ 未判定",
+        "accepted": "🟢 採用",
+        "edited":   "🟡 修正済",
+        "rejected": "🔴 却下",
+    }.get(qa.review_status, qa.review_status)
+    st.markdown(f"**{badge}**　`{qa.qa_id}`　`track={'kg_poc' if is_kg else 'general'}`")
 
-    # ============================================================
-    # 2-column main: Q/A on left, evidence chunks on right
-    # ============================================================
     edit_mode = st.session_state.get(f"{key_prefix}_edit_mode_{idx}", False)
     anchor_chunks = _resolve_anchor_chunks(qa, chunks_dir)
 
-    # Compute rationale match (deterministic)
+    # 機械照合 (決定論): 引用が原文と一字一句一致するか
     import re as _re
-    all_chunks_text = "".join(c.text for c in anchor_chunks)
-    stripped_all = _re.sub(r"\s+", "", all_chunks_text)
+    stripped_all = _re.sub(r"\s+", "", "".join(c.text for c in anchor_chunks))
     all_match = True
     rationale_results = []
     for r in qa.rationale:
@@ -666,132 +496,118 @@ def _render_review_body(
         if not hit:
             all_match = False
 
-    col_qa, col_evi = st.columns(2)
+    # ============================================================
+    # ① 読む — 質問と回答だけを大きく。メタ情報は控えめなチップに
+    # ============================================================
+    st.markdown("#### ① 質問")
+    if edit_mode:
+        new_q = st.text_area(
+            "q", qa.question, height=90,
+            key=f"{key_prefix}_q_{idx}", label_visibility="collapsed",
+        )
+    else:
+        st.info(qa.question)
+        new_q = qa.question
 
-    with col_qa:
-        st.markdown("##### ① 質問と回答を読む")
-        st.markdown("**質問**")
-        if edit_mode:
-            new_q = st.text_area(
-                "q", qa.question, height=90,
-                key=f"{key_prefix}_q_{idx}", label_visibility="collapsed",
-            )
+    st.markdown("#### 回答")
+    if edit_mode:
+        new_a = st.text_area(
+            "a", qa.answer, height=120,
+            key=f"{key_prefix}_a_{idx}", label_visibility="collapsed",
+        )
+    else:
+        st.write(qa.answer)
+        new_a = qa.answer
+
+    chips: dict[str, str] = {}
+    if is_kg:
+        from rageval.tracks.kg_poc import (
+            KG_NOVELTY_LABELS,
+            KG_QUERY_TYPE_LABELS,
+            LLM_KNOWLEDGE_LABELS,
+        )
+        qt, nov = qa.kg_query_type or "", qa.kg_novelty or ""
+        chips["クエリ型"] = KG_QUERY_TYPE_LABELS.get(qt, qt or "(未指定)")
+        chips["未知性"] = KG_NOVELTY_LABELS.get(nov, nov or "(未指定)")
+        if qa.llm_knowledge:
+            k_label = LLM_KNOWLEDGE_LABELS.get(qa.llm_knowledge, qa.llm_knowledge)
+            chips["LLM既知性"] = f"{k_label} (RAG必須)" if qa.llm_knowledge == "unknown" else k_label
         else:
-            st.info(qa.question)
-            new_q = qa.question
+            chips["LLM既知性"] = "未付与"
+    else:
+        chips["分類"] = ", ".join(_CATEGORY_LABELS.get(c, c) for c in qa.category) or "(なし)"
+        chips["観点"] = ", ".join(ASPECT_LABELS.get(a, a) for a in qa.aspect) or "(なし)"
+    chips["検索"] = qa.retrieval_level
+    chips["回答"] = qa.answer_level
+    st.caption("　".join(f"`{k}: {v}`" for k, v in chips.items()))
 
-        st.markdown("**回答**")
-        if edit_mode:
-            new_a = st.text_area(
-                "a", qa.answer, height=110,
-                key=f"{key_prefix}_a_{idx}", label_visibility="collapsed",
-            )
-        else:
-            st.markdown("> " + qa.answer.replace("\n", "\n> "))
-            new_a = qa.answer
+    # ============================================================
+    # ② 裏取り — 合格バッジ + 引用はエクスパンダ (不合格時のみ自動展開)
+    # ============================================================
+    st.markdown("#### ② 裏取り")
+    if not anchor_chunks:
+        st.warning(
+            f"原文チャンクが見つかりません (参照先: {chunks_dir})。"
+            "起動時の --chunks がこのQAのコーパスと合っているか確認してください "
+            "(例: --chunks data/chunks_plant)"
+        )
+    elif all_match:
+        st.success(
+            "機械チェック合格：引用はすべて原文と一致。"
+            "黄色の箇所が回答と合っているか目視確認だけでOK。",
+            icon=":material/check_circle:",
+        )
+    else:
+        st.warning(
+            "機械チェック未合格：原文に見つからない引用があります。"
+            "下の ✗ 印の引用を原文と突き合わせてください。",
+            icon=":material/error:",
+        )
 
-        if qa.difficulty_rationale:
-            st.caption(f"難易度根拠: `{qa.difficulty_rationale}`")
-
-    with col_evi:
-        st.markdown("##### ② 答えが本当に原文に書いてあるか確かめる")
-        if all_match:
-            st.success(
-                "機械チェック合格: 引用はすべて原文と一字一句一致しています。"
-                "**黄色の箇所を読んで、回答と合っているかだけ確認すればOK**",
-                icon=":material/check_circle:",
-            )
-        else:
-            st.error(
-                "引用が原文に見つからないものがあります。"
-                "**下の ✗ 印の引用を原文と突き合わせ、内容が違っていたら「却下」**",
-                icon=":material/error:",
-            )
-
-        if not anchor_chunks:
-            st.warning(
-                f"原文チャンクが見つかりません (参照先: {chunks_dir})。"
-                "起動時の --chunks がこのQAのコーパスと合っているか確認してください "
-                "(例: --chunks data/chunks_plant)"
-            )
-
+    with st.expander("引用を表示して根拠を確認する", expanded=not all_match):
+        st.markdown("**引用一覧** (✓=原文と一致 / ✗=原文に見つからない)")
+        for r, hit in rationale_results:
+            mark = ":green[✓]" if hit else ":red[✗]"
+            st.markdown(f"- {mark} `{r.doc_id}` (p.{r.page}) — {r.text}")
         for ch in anchor_chunks:
             section = " > ".join(ch.section_path) if ch.section_path else "(見出しなし)"
             st.caption(f"**{ch.doc_id}** ・ p.{ch.page} ・ `{ch.chunk_id}` ・ {section}")
             highlighted = _highlight_rationale_in_chunk(ch.text, qa.rationale)
             st.markdown(
                 f"<div style='font-size:12.5px;line-height:1.7;"
-                f"max-height:200px;overflow:auto;white-space:pre-wrap;"
+                f"max-height:240px;overflow:auto;white-space:pre-wrap;"
                 f"padding:6px 8px;border-left:3px solid #45637A;background:#FAFAFA;'>"
                 f"{highlighted}</div>",
                 unsafe_allow_html=True,
             )
 
-        st.markdown("**引用一覧** (✓=原文と一致 / ✗=原文に見つからない)")
-        for r, hit in rationale_results:
-            mark = ":green[✓]" if hit else ":red[✗]"
-            st.markdown(f"- {mark} `{r.doc_id}` (p.{r.page}) — {r.text}")
-
     # ============================================================
-    # Checklist — N columns with native progress bar
+    # ③ 決める — 減点式: 問題があるときだけ指摘。指摘ゼロなら追加クリック不要
     # ============================================================
-    st.markdown("")
+    st.markdown("#### ③ 判定")
     groups = _checklist_groups(qa)
-    total_checks = sum(len(items_) for _, items_ in groups)
-
-    n_checked = sum(
+    total_checks = sum(len(gitems) for _, gitems in groups)
+    n_flags = sum(
         1 for _, gitems in groups for k, _, _ in gitems
         if st.session_state.get(f"{key_prefix}_{k}_{idx}", False)
     )
+    if n_flags == 0:
+        st.markdown(f"✅ **指摘なし（{total_checks}項目すべてクリア）** — このまま「採用」できます")
+    else:
+        st.markdown(f"⚠️ **{n_flags} 件の指摘あり** — 「修正」または「却下」を検討してください")
 
-    hdr, allbtn = st.columns([4, 1])
-    with hdr:
-        st.markdown("##### ③ 合否チェック :gray[— 全項目 ✓ で「採用」が押せます。良問と確信したら「すべて✓」→「採用」]")
-    with allbtn:
-        if st.button("すべて ✓", width="stretch", key=f"{key_prefix}_checkall_{idx}"):
-            for _, gitems in groups:
-                for k, _, _ in gitems:
-                    st.session_state[f"{key_prefix}_{k}_{idx}"] = True
-            st.rerun()
-    st.progress(
-        n_checked / total_checks if total_checks else 0,
-        text=f"{n_checked} / {total_checks}",
-    )
-
-    ck_cols = st.columns(len(groups))
-    check_values: list[bool] = []
-    for col, (gname, gitems) in zip(ck_cols, groups):
-        with col:
-            st.caption(gname)
-            for key, label, desc in gitems:
-                v = st.checkbox(label, key=f"{key_prefix}_{key}_{idx}", help=desc)
-                check_values.append(v)
-
-    all_checked = all(check_values)
+    with st.expander(f"問題を指摘する（{n_flags} 件選択中）", expanded=n_flags > 0):
+        ck_cols = st.columns(len(groups))
+        for col, (gname, gitems) in zip(ck_cols, groups):
+            with col:
+                st.markdown(f"**{gname}**")
+                for key, label, desc in gitems:
+                    st.checkbox(label, key=f"{key_prefix}_{key}_{idx}", help=desc)
 
     # ============================================================
-    # Collapsibles: judge scores + raw JSON
+    # 判定ボタン — ゲートなし (減点式なので指摘の有無に関わらず押せる)
     # ============================================================
-    fs = qa.filter_scores
-    score_summary = (
-        f"答えられるか={fs.answerability or '-'} 根拠妥当性={fs.grounding or '-'} "
-        f"漏れ判定={fs.leakage or '-'} 根拠一致={fs.rationale_grounded if fs.rationale_grounded is not None else '-'}"
-    )
-    with st.expander(f"参考: 判定LLMスコア ({score_summary})", expanded=False):
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("答えられるか", f"{fs.answerability:.1f}/5" if fs.answerability else "—")
-        s2.metric("根拠妥当性", f"{fs.grounding:.1f}/5" if fs.grounding else "—")
-        s3.metric("回答漏れ判定", str(fs.leakage) if fs.leakage else "—")
-        s4.metric("独自性", f"{fs.uniqueness:.2f}" if fs.uniqueness else "—")
-        s5.metric("根拠の逐語一致率", f"{fs.rationale_grounded:.0%}" if fs.rationale_grounded is not None else "—")
-
-    with st.expander("生 JSON (デバッグ用)"):
-        st.json(qa.model_dump(mode="json"))
-
-    # ============================================================
-    # Action bar (bottom)
-    # ============================================================
-    st.markdown("---")
+    st.write("")
     now = datetime.now()
 
     def _mark(status: str, question: str, answer: str) -> None:
@@ -803,50 +619,70 @@ def _render_review_body(
         items[idx] = qa
         _save_items(items, out_path)
 
-    gate_msg = (
-        ":material/check_circle: ④ 判定してください — チェック完了、「採用」が押せます"
-        if all_checked
-        else f":material/info: ④ 判定 — 「採用」には残り **{total_checks - n_checked}** 項目のチェックが必要 (だめな問いはチェック不要で「却下」)"
-    )
-    ga1, ga2, ga3, ga4, ga5 = st.columns([3, 1, 1, 1, 1])
-    with ga1:
-        if all_checked:
-            st.success(gate_msg)
-        else:
-            st.info(gate_msg)
-    with ga2:
-        if st.button("却下", width="stretch", type="secondary", key=f"{key_prefix}_reject",
-                     help="この問いを評価セットに入れない (チェック不要で押せる)"):
-            _mark("rejected", qa.question, qa.answer)
-            if idx < total - 1:
-                st.session_state[idx_key] = idx + 1
+    def _advance() -> None:
+        if idx < total - 1:
+            st.session_state[idx_key] = idx + 1
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("🟢 採用", width="stretch", type="primary", key=f"{key_prefix}_accept",
+                     help="評価セットに入れる (自動保存して次の問いへ)"):
+            _mark("accepted", qa.question, qa.answer)
+            _advance()
             st.rerun()
-    with ga3:
+    with b2:
         if not edit_mode:
-            if st.button("修正", width="stretch", type="secondary", key=f"{key_prefix}_edit",
-                         help="質問・回答の文言を直してから採用する"):
+            if st.button("🟡 修正", width="stretch", key=f"{key_prefix}_edit",
+                         help="質問・回答を書き直す (① が編集欄に変わる)"):
                 st.session_state[f"{key_prefix}_edit_mode_{idx}"] = True
                 st.rerun()
         else:
-            if st.button("修正を保存", width="stretch", type="secondary", key=f"{key_prefix}_save"):
+            if st.button("💾 修正を保存", width="stretch", key=f"{key_prefix}_save",
+                         help="書き直した内容で確定して次の問いへ"):
                 _mark("edited", new_q, new_a)
                 st.session_state[f"{key_prefix}_edit_mode_{idx}"] = False
-                if idx < total - 1:
-                    st.session_state[idx_key] = idx + 1
+                _advance()
                 st.rerun()
-    with ga4:
-        if st.button("採用", width="stretch", type="primary",
-                     disabled=not all_checked, key=f"{key_prefix}_accept",
-                     help="チェック全項目 ✓ で押せるようになる"):
-            _mark("accepted", qa.question, qa.answer)
-            if idx < total - 1:
-                st.session_state[idx_key] = idx + 1
+    with b3:
+        if st.button("🔴 却下", width="stretch", key=f"{key_prefix}_reject",
+                     help="評価セットに入れない (自動保存して次の問いへ)"):
+            _mark("rejected", qa.question, qa.answer)
+            _advance()
             st.rerun()
-    with ga5:
-        if st.button("途中保存", width="stretch", key=f"{key_prefix}_snapshot",
-                     help="判定済み分をファイルに書き出す (採用/却下時は自動保存されるので通常は不要)"):
-            _save_items(items, out_path)
-            st.toast("保存しました")
+
+    # ============================================================
+    # 詳細 (折りたたみ): 難易度根拠・タグの定義・判定LLMスコア・生JSON
+    # ============================================================
+    with st.expander("詳細（難易度根拠・タグの定義・判定LLMスコア・生JSON）"):
+        if qa.difficulty_rationale:
+            st.markdown("**難易度根拠**")
+            st.write(qa.difficulty_rationale)
+        if is_kg:
+            from rageval.tracks.kg_poc import (
+                KG_NOVELTY_DESCRIPTIONS,
+                KG_QUERY_TYPE_DESCRIPTIONS,
+            )
+            if qa.kg_query_type:
+                st.markdown(f"**クエリ型の定義**: {KG_QUERY_TYPE_DESCRIPTIONS.get(qa.kg_query_type, '')}")
+            if qa.kg_novelty:
+                st.markdown(f"**未知性の定義**: {KG_NOVELTY_DESCRIPTIONS.get(qa.kg_novelty, '')}")
+        else:
+            for a in qa.aspect:
+                st.markdown(f"**観点「{ASPECT_LABELS.get(a, a)}」の定義**: {ASPECT_DESCRIPTIONS.get(a, '(定義なし)')}")
+        diag = _summarize_diagnostic_tags(qa)
+        if diag:
+            st.markdown("**診断タグ**")
+            st.markdown(diag)
+        fs = qa.filter_scores
+        st.markdown("**判定LLMスコア**")
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("答えられるか", f"{fs.answerability:.1f}/5" if fs.answerability else "—")
+        s2.metric("根拠妥当性", f"{fs.grounding:.1f}/5" if fs.grounding else "—")
+        s3.metric("漏れ判定", str(fs.leakage) if fs.leakage else "—")
+        s4.metric("独自性", f"{fs.uniqueness:.2f}" if fs.uniqueness else "—")
+        s5.metric("逐語一致率", f"{fs.rationale_grounded:.0%}" if fs.rationale_grounded is not None else "—")
+        st.markdown("**生JSON**")
+        st.json(qa.model_dump(mode="json"))
 
 
 if __name__ == "__main__":
