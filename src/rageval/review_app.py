@@ -284,12 +284,19 @@ _CHUNK_SUFFIX_RE = __import__("re").compile(r"__c\d+$")
 
 @st.cache_data(show_spinner=False)
 def _load_chunk_index(chunks_dir: str) -> tuple[dict, dict, dict]:
-    """Return (by_doc_page, by_chunk_id, by_doc) for anchor resolution."""
+    """Return (by_doc_page, by_chunk_id, by_doc) for anchor resolution.
+
+    by_doc_page は (doc_id, page) → list[Chunk]。同一ページに複数チャンク
+    (PDF は最大6個、.txt は page=None で文書全体) があるため、1個に潰すと
+    引用を含む正しいチャンクを取り違える。
+    """
     path = Path(chunks_dir)
     if not path.exists():
         return {}, {}, {}
     chunks = load_chunks(path)
-    by_doc_page = {(c.doc_id, c.page): c for c in chunks}
+    by_doc_page: dict[tuple, list[Chunk]] = {}
+    for c in chunks:
+        by_doc_page.setdefault((c.doc_id, c.page), []).append(c)
     by_chunk_id = {c.chunk_id: c for c in chunks}
     by_doc: dict[str, list[Chunk]] = {}
     for c in chunks:
@@ -298,36 +305,37 @@ def _load_chunk_index(chunks_dir: str) -> tuple[dict, dict, dict]:
 
 
 def _resolve_anchor_chunks(qa: QAItem, chunks_dir: str) -> list[Chunk]:
-    """For each rationale entry, return the matching Chunk (with full text)."""
+    """For each rationale entry, return the matching Chunk (with full text).
+
+    候補が複数あるときは **引用 (rationale.text) を逐語で含むチャンク** を選ぶ
+    (filter.py の照合と同じ方針)。含むものが無ければ先頭候補。
+    """
+    import re as _re
     by_doc_page, by_chunk_id, by_doc = _load_chunk_index(chunks_dir)
+
+    def _norm(s: str) -> str:
+        return _re.sub(r"\s+", "", s)
+
     out: list[Chunk] = []
     seen: set[str] = set()
     for r in qa.rationale:
-        # (doc_id, page) exact
-        c = by_doc_page.get((r.doc_id, r.page))
-        if c and c.chunk_id not in seen:
-            out.append(c)
-            seen.add(c.chunk_id)
+        norm_doc = _CHUNK_SUFFIX_RE.sub("", r.doc_id)
+        candidates: list[Chunk] = (
+            by_doc_page.get((r.doc_id, r.page))
+            or by_doc_page.get((norm_doc, r.page))
+            or ([by_chunk_id[r.doc_id]] if r.doc_id in by_chunk_id else [])
+            or by_doc.get(norm_doc, [])
+        )
+        if not candidates:
             continue
-        # normalize doc_id
-        norm = _CHUNK_SUFFIX_RE.sub("", r.doc_id)
-        c = by_doc_page.get((norm, r.page))
-        if c and c.chunk_id not in seen:
-            out.append(c)
-            seen.add(c.chunk_id)
-            continue
-        # rationale.doc_id IS a chunk_id
-        c = by_chunk_id.get(r.doc_id)
-        if c and c.chunk_id not in seen:
-            out.append(c)
-            seen.add(c.chunk_id)
-            continue
-        # any chunk in normalized doc
-        if norm in by_doc and by_doc[norm]:
-            c = by_doc[norm][0]
-            if c.chunk_id not in seen:
-                out.append(c)
-                seen.add(c.chunk_id)
+        needle = _norm(r.text)
+        best = next(
+            (c for c in candidates if needle and needle in _norm(c.text)),
+            candidates[0],
+        )
+        if best.chunk_id not in seen:
+            out.append(best)
+            seen.add(best.chunk_id)
     return out
 
 
@@ -431,10 +439,10 @@ def _render_identity_strip(qa: QAItem) -> None:
     is_kg = qa.kg_query_type is not None or qa.kg_novelty is not None
     diff_color = {"Easy": "green", "Medium": "orange", "Hard": "red"}
     status_marker = {
-        "pending":  ":gray[● pending]",
-        "accepted": ":green[✓ accepted]",
-        "edited":   ":orange[✎ edited]",
-        "rejected": ":red[✕ rejected]",
+        "pending":  ":gray[● 未判定]",
+        "accepted": ":green[✓ 採用]",
+        "edited":   ":orange[✎ 修正済]",
+        "rejected": ":red[✕ 却下]",
     }.get(qa.review_status, qa.review_status)
 
     parts: list[str] = [
@@ -466,7 +474,7 @@ def _render_identity_strip(qa: QAItem) -> None:
 
     parts.append(f"検索: :{diff_color.get(qa.retrieval_level, 'gray')}[{qa.retrieval_level}]")
     parts.append(f"回答: :{diff_color.get(qa.answer_level, 'gray')}[{qa.answer_level}]")
-    parts.append(f"status: {status_marker}")
+    parts.append(f"判定: {status_marker}")
 
     st.caption(" ・ ".join(parts))
 
@@ -552,22 +560,22 @@ def render_review_panel(
         counts = _status_counts(items)
         h1, h2, h3 = st.columns([1, 4, 1])
         with h1:
-            if st.button("← prev", disabled=idx == 0, width="stretch", key=f"{key_prefix}_prev"):
+            if st.button("← 前へ", disabled=idx == 0, width="stretch", key=f"{key_prefix}_prev"):
                 st.session_state[idx_key] = idx - 1
                 st.rerun()
         with h2:
             st.progress(
                 (idx + 1) / total,
                 text=(
-                    f"{idx + 1} / {total}    "
-                    f":green[✓ {counts['accepted']}]  "
-                    f":orange[✎ {counts['edited']}]  "
-                    f":red[✕ {counts['rejected']}]  "
-                    f":gray[● {counts['pending']}]"
+                    f"{idx + 1} 問目 / 全 {total} 問    "
+                    f":green[採用 {counts['accepted']}]  "
+                    f":orange[修正 {counts['edited']}]  "
+                    f":red[却下 {counts['rejected']}]  "
+                    f":gray[未判定 {counts['pending']}]"
                 ),
             )
         with h3:
-            if st.button("next →", disabled=idx >= total - 1, width="stretch", key=f"{key_prefix}_next"):
+            if st.button("次へ →", disabled=idx >= total - 1, width="stretch", key=f"{key_prefix}_next"):
                 st.session_state[idx_key] = idx + 1
                 st.rerun()
 
@@ -661,6 +669,7 @@ def _render_review_body(
     col_qa, col_evi = st.columns(2)
 
     with col_qa:
+        st.markdown("##### ① 質問と回答を読む")
         st.markdown("**質問**")
         if edit_mode:
             new_q = st.text_area(
@@ -685,17 +694,29 @@ def _render_review_body(
             st.caption(f"難易度根拠: `{qa.difficulty_rationale}`")
 
     with col_evi:
-        st.markdown("**元チャンク** (根拠を黄色でハイライト)")
+        st.markdown("##### ② 答えが本当に原文に書いてあるか確かめる")
         if all_match:
-            st.success("✓ 根拠はすべて元チャンクに含まれる", icon=":material/check_circle:")
+            st.success(
+                "機械チェック合格: 引用はすべて原文と一字一句一致しています。"
+                "**黄色の箇所を読んで、回答と合っているかだけ確認すればOK**",
+                icon=":material/check_circle:",
+            )
         else:
-            st.error("✗ 根拠の不一致あり — 要確認", icon=":material/error:")
+            st.error(
+                "引用が原文に見つからないものがあります。"
+                "**下の ✗ 印の引用を原文と突き合わせ、内容が違っていたら「却下」**",
+                icon=":material/error:",
+            )
 
         if not anchor_chunks:
-            st.warning(f"chunks に該当なし (chunks_dir={chunks_dir})")
+            st.warning(
+                f"原文チャンクが見つかりません (参照先: {chunks_dir})。"
+                "起動時の --chunks がこのQAのコーパスと合っているか確認してください "
+                "(例: --chunks data/chunks_plant)"
+            )
 
         for ch in anchor_chunks:
-            section = " > ".join(ch.section_path) if ch.section_path else "(no section)"
+            section = " > ".join(ch.section_path) if ch.section_path else "(見出しなし)"
             st.caption(f"**{ch.doc_id}** ・ p.{ch.page} ・ `{ch.chunk_id}` ・ {section}")
             highlighted = _highlight_rationale_in_chunk(ch.text, qa.rationale)
             st.markdown(
@@ -706,7 +727,7 @@ def _render_review_body(
                 unsafe_allow_html=True,
             )
 
-        st.markdown("**根拠** (生成時の引用)")
+        st.markdown("**引用一覧** (✓=原文と一致 / ✗=原文に見つからない)")
         for r, hit in rationale_results:
             mark = ":green[✓]" if hit else ":red[✗]"
             st.markdown(f"- {mark} `{r.doc_id}` (p.{r.page}) — {r.text}")
@@ -723,7 +744,15 @@ def _render_review_body(
         if st.session_state.get(f"{key_prefix}_{k}_{idx}", False)
     )
 
-    st.markdown("**人手チェックリスト** :gray[→ 全項目 ✓ で Accept ボタンが解放されます]")
+    hdr, allbtn = st.columns([4, 1])
+    with hdr:
+        st.markdown("##### ③ 合否チェック :gray[— 全項目 ✓ で「採用」が押せます。良問と確信したら「すべて✓」→「採用」]")
+    with allbtn:
+        if st.button("すべて ✓", width="stretch", key=f"{key_prefix}_checkall_{idx}"):
+            for _, gitems in groups:
+                for k, _, _ in gitems:
+                    st.session_state[f"{key_prefix}_{k}_{idx}"] = True
+            st.rerun()
     st.progress(
         n_checked / total_checks if total_checks else 0,
         text=f"{n_checked} / {total_checks}",
@@ -775,9 +804,9 @@ def _render_review_body(
         _save_items(items, out_path)
 
     gate_msg = (
-        ":material/check_circle: チェック完了 → Accept できます"
+        ":material/check_circle: ④ 判定してください — チェック完了、「採用」が押せます"
         if all_checked
-        else f":material/info: Accept には残り **{total_checks - n_checked}** 項目のチェックが必要"
+        else f":material/info: ④ 判定 — 「採用」には残り **{total_checks - n_checked}** 項目のチェックが必要 (だめな問いはチェック不要で「却下」)"
     )
     ga1, ga2, ga3, ga4, ga5 = st.columns([3, 1, 1, 1, 1])
     with ga1:
@@ -786,34 +815,38 @@ def _render_review_body(
         else:
             st.info(gate_msg)
     with ga2:
-        if st.button("Reject", width="stretch", type="secondary", key=f"{key_prefix}_reject"):
+        if st.button("却下", width="stretch", type="secondary", key=f"{key_prefix}_reject",
+                     help="この問いを評価セットに入れない (チェック不要で押せる)"):
             _mark("rejected", qa.question, qa.answer)
             if idx < total - 1:
                 st.session_state[idx_key] = idx + 1
             st.rerun()
     with ga3:
         if not edit_mode:
-            if st.button("Edit", width="stretch", type="secondary", key=f"{key_prefix}_edit"):
+            if st.button("修正", width="stretch", type="secondary", key=f"{key_prefix}_edit",
+                         help="質問・回答の文言を直してから採用する"):
                 st.session_state[f"{key_prefix}_edit_mode_{idx}"] = True
                 st.rerun()
         else:
-            if st.button("Save Edit", width="stretch", type="secondary", key=f"{key_prefix}_save"):
+            if st.button("修正を保存", width="stretch", type="secondary", key=f"{key_prefix}_save"):
                 _mark("edited", new_q, new_a)
                 st.session_state[f"{key_prefix}_edit_mode_{idx}"] = False
                 if idx < total - 1:
                     st.session_state[idx_key] = idx + 1
                 st.rerun()
     with ga4:
-        if st.button("Accept", width="stretch", type="primary",
-                     disabled=not all_checked, key=f"{key_prefix}_accept"):
+        if st.button("採用", width="stretch", type="primary",
+                     disabled=not all_checked, key=f"{key_prefix}_accept",
+                     help="チェック全項目 ✓ で押せるようになる"):
             _mark("accepted", qa.question, qa.answer)
             if idx < total - 1:
                 st.session_state[idx_key] = idx + 1
             st.rerun()
     with ga5:
-        if st.button("Save snapshot", width="stretch", key=f"{key_prefix}_snapshot"):
+        if st.button("途中保存", width="stretch", key=f"{key_prefix}_snapshot",
+                     help="判定済み分をファイルに書き出す (採用/却下時は自動保存されるので通常は不要)"):
             _save_items(items, out_path)
-            st.toast("Saved snapshot")
+            st.toast("保存しました")
 
 
 if __name__ == "__main__":
