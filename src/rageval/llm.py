@@ -136,12 +136,18 @@ def _vllm_timeout() -> float:
 
 # ---------- backend implementations ----------
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
+# 流量制限 (429) は Azure 側の枠が 60 秒で回復するため、待ち上限を 60 秒まで
+# 伸ばして粘る。旧設定 (3回・最大10秒) では判定の連続呼び出しで枠を使い切ると
+# 再試行が尽きてバッチ全体が落ちていた。
+_RETRY_KWARGS = dict(
+    stop=stop_after_attempt(6),
+    wait=wait_exponential(multiplier=2, min=2, max=60),
     retry=retry_if_exception_type(Exception),
     reraise=True,
 )
+
+
+@retry(**_RETRY_KWARGS)
 def _call_openai_compatible(
     prompt: str,
     model: str,
@@ -175,12 +181,7 @@ def _call_openai_compatible(
     return resp.choices[0].message.content or ""
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@retry(**_RETRY_KWARGS)
 def _call_azure_openai(
     prompt: str,
     deployment: str,
@@ -221,12 +222,7 @@ def _call_azure_openai(
     return resp.choices[0].message.content or ""
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@retry(**_RETRY_KWARGS)
 def _call_anthropic(
     prompt: str,
     model: str,

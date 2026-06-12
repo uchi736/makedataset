@@ -235,17 +235,16 @@ def _kg_aspect_for_strategy(spec: dict[str, Any]) -> str:
     qt, nov = spec["kg_query_type"], spec["kg_novelty"]
     if qt == "single_fact":
         return "quantitative_calc"  # → SingleChunk
-    if nov == "unknown_relation":
-        return "multi_doc_reference"  # MultiDocByEmbedding(force_distinct_doc=True)
-    if nov == "procedural_relation":
-        return "remote_reference"     # SameDocRemote
-    if qt == "multi_hop":
-        return "multi_hop"
+    # 関係を問う組は、埋め込み類似ペア (似ているだけで関係が無い) ではなく
+    # 実在参照 (第N条→本文/別表) で繋がったペアを使う。類似ペアで作った
+    # multi_hop/aggregation は判定で answerability/grounding=3 で大量死した。
+    if qt in ("multi_hop", "traceability"):
+        return "reference_follow"
+    if nov in ("unknown_relation", "procedural_relation"):
+        return "reference_follow"
     if qt == "aggregation":
-        return "multi_source_integration"
-    if qt == "traceability":
-        return "multi_doc_reference"
-    return "multi_hop"
+        return "multi_source_integration"  # 列挙系は類似散在で可 (unknown_term のみ到達)
+    return "reference_follow"
 
 
 def generate_batch(

@@ -153,6 +153,8 @@ ASPECT_COMPATIBILITY: dict[str, Callable[[Chunk], bool]] = {
     "insufficient_evidence":    _always,           # LLM crafts unanswerable question
     "contradictory_evidence":   _always,
     "fragmented_chunk":         _always,
+    # --- kg_poc 専用キー ---
+    "reference_follow":         _has_any_reference,
 }
 
 
@@ -217,20 +219,36 @@ class SameDocRemote:
         return [anchor] + pool[: self.n - 1]
 
 
-# ---------------- Reference-following (for standards_reference) ----------------
+# ---------------- Reference-following (for standards_reference / kg relation cells) ----------------
+
+# 「第N条」「別表N」「附属書X」「第N章」は文書内で参照先を特定できる。
+# 「第N項」は多くの条に存在して曖昧 (自条の項を指すことが多い) なので劣後させる。
+_SPECIFIC_REF_RE = re.compile(r"第\d+条|別表|附属書|第\d+章")
+
 
 @dataclass
 class ReferenceFollow:
     n: int = 2
+    # True なら特定性の高い参照 (条/別表/章) を優先し、無ければ全参照を使う
+    prefer_specific: bool = False
 
     def select(self, chunks, embeddings, rng) -> list[Chunk]:
         anchors_with_refs = [c for c in chunks if c.references]
+        if self.prefer_specific:
+            specific = [c for c in anchors_with_refs
+                        if any(_SPECIFIC_REF_RE.search(r) for r in c.references)]
+            if specific:
+                anchors_with_refs = specific
         if not anchors_with_refs:
             return [rng.choice(chunks)]
         anchor = rng.choice(anchors_with_refs)
+        refs = anchor.references
+        if self.prefer_specific:
+            spec_refs = [r for r in refs if _SPECIFIC_REF_RE.search(r)]
+            refs = spec_refs or refs
         # Find chunks whose text or section_path mentions any of anchor's refs
         targets: list[Chunk] = []
-        for ref in anchor.references:
+        for ref in refs:
             for c in chunks:
                 if c.chunk_id == anchor.chunk_id:
                     continue
@@ -309,6 +327,10 @@ ASPECT_STRATEGIES: dict[str, Strategy] = {
     "remote_reference":         SameDocRemote(n=2, min_position_gap=3),
     "standards_reference":      ReferenceFollow(n=2),
     "multi_hop":                MultiDocByEmbedding(n=2, force_distinct_doc=False, sim_floor=0.5),
+    # kg_poc の関係系セル用: 実在する参照 (第N条→本文/別表) で繋がった2チャンク。
+    # 埋め込み類似ペアは「似ているが関係が無い」問いを量産して判定で落ちるため、
+    # 関係を問う組では参照辿りを使う。
+    "reference_follow":         ReferenceFollow(n=2, prefer_specific=True),
 }
 
 

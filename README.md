@@ -22,9 +22,14 @@
 | 配分の指定 | 観点はループ毎にランダム抽選 | `--mix qt:nov=N,...` で明示。未指定なら15セルに等分 |
 | 専用コマンド | `review` / `stats` | `review-kg` / `stats-kg` / `probe` (任意) |
 | QAItem 上の主タグ | `category[]` / `aspect[]` | `kg_query_type` / `kg_novelty` / `llm_knowledge` |
-| 1ファイルの中で混在は? | 可。`review` 既定は general だけ、`review-kg` は kg_poc だけを表示 | 同上 |
+| 1ファイルの中で混在は? | スキーマ上は可だが**運用では禁止**(下記規約) | 同上 |
 
 両方とも 4軸の診断タグ (推論複雑度 / 検索難易度 / 構造 / 説明可能性) と Easy/Medium/Hard 難易度は共通で付く。違うのは「主タグ」だけ。
+
+> **運用規約: 1ファイル1トラック・置き場もトラック別に分ける。**
+> 生成時の `--out` をトラック別に固定する (例: general → `data/raw_general/`、kg_poc → `data/raw_kg/`)。
+> 同様に filter の `--out` も `data/filtered_general/` / `data/filtered_kg/` と分ける。
+> 混在ファイルを作らなければ、`review` / `stats` の `--track` 切替に頼る場面はなくなる。
 
 ---
 

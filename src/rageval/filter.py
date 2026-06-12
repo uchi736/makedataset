@@ -104,10 +104,15 @@ def compute_rationale_grounded(
 
 def _find_chunk_texts(
     qa: QAItem,
-    chunk_index: dict[tuple[str, Optional[int]], str],
+    chunk_index: dict[tuple[str, Optional[int]], list[str]],
     full_chunks: list,
 ) -> list[tuple[str, Optional[int], str]]:
     """Return one anchor chunk per rationale entry (deduped).
+
+    同一 (doc_id, page) には複数チャンクがあり得る (PDF は1ページ最大6チャンク、
+    .txt は page=None で文書全体が同一キー)。候補を全部連結すると判定LLMへの
+    入力が文書まるごとに膨張するため、**rationale を逐語で含むチャンクを1つ選ぶ**。
+    含むものが無ければ先頭候補 (逐語照合は 0 になり正しく落ちる)。
 
     Lookup strategy per rationale:
       1. (doc_id, page) exact match
@@ -119,57 +124,50 @@ def _find_chunk_texts(
     by_chunk_id: dict[str, tuple[str, Optional[int], str]] = {
         c.chunk_id: (c.doc_id, c.page, c.text) for c in full_chunks
     }
-    # Build doc_id → list of chunks for case 4
-    by_doc: dict[str, list[tuple[str, Optional[int], str]]] = {}
+    # Build doc_id → list of texts for case 4
+    by_doc: dict[str, list[str]] = {}
     for c in full_chunks:
-        by_doc.setdefault(c.doc_id, []).append((c.doc_id, c.page, c.text))
+        by_doc.setdefault(c.doc_id, []).append(c.text)
+
+    def _candidates(r) -> Optional[tuple[str, Optional[int], list[str]]]:
+        norm_doc = _normalize_doc_id(r.doc_id)
+        for doc, page in ((r.doc_id, r.page), (norm_doc, r.page)):
+            texts = chunk_index.get((doc, page))
+            if texts:
+                return doc, page, texts
+        if r.doc_id in by_chunk_id:
+            doc, page, text = by_chunk_id[r.doc_id]
+            return doc, page, [text]
+        if norm_doc in by_doc:
+            return norm_doc, r.page, by_doc[norm_doc]
+        return None
 
     out: list[tuple[str, Optional[int], str]] = []
-    seen: set[tuple[str, Optional[int]]] = set()
+    seen: set[tuple[str, Optional[int], int]] = set()
 
     for r in qa.rationale:
-        # case 1: exact
-        key = (r.doc_id, r.page)
-        text = chunk_index.get(key)
-        if text:
-            if key not in seen:
-                out.append((r.doc_id, r.page, text))
-                seen.add(key)
+        found = _candidates(r)
+        if not found:
             continue
-        # case 2: normalize doc_id
-        norm_doc = _normalize_doc_id(r.doc_id)
-        key2 = (norm_doc, r.page)
-        text = chunk_index.get(key2)
-        if text:
-            if key2 not in seen:
-                out.append((norm_doc, r.page, text))
-                seen.add(key2)
-            continue
-        # case 3: rationale.doc_id IS a chunk_id
-        if r.doc_id in by_chunk_id:
-            doc_id, page, txt = by_chunk_id[r.doc_id]
-            key3 = (doc_id, page)
-            if key3 not in seen:
-                out.append((doc_id, page, txt))
-                seen.add(key3)
-            continue
-        # case 4: any chunk in normalized doc
-        if norm_doc in by_doc:
-            doc_id, page, txt = by_doc[norm_doc][0]
-            key4 = (doc_id, page)
-            if key4 not in seen:
-                out.append((doc_id, page, txt))
-                seen.add(key4)
-            continue
+        doc_id, page, texts = found
+        needle = _normalize_for_match(r.text)
+        best = next(
+            (t for t in texts if needle and needle in _normalize_for_match(t)),
+            texts[0],
+        )
+        key = (doc_id, page, hash(best))
+        if key not in seen:
+            out.append((doc_id, page, best))
+            seen.add(key)
 
     if out:
         return out
     # last-resort fallback
     if qa.rationale:
         target_doc = _normalize_doc_id(qa.rationale[0].doc_id)
-        for (doc_id, page), text in chunk_index.items():
-            if doc_id == target_doc:
-                return [(doc_id, page, text)]
+        for (doc_id, page), texts in chunk_index.items():
+            if doc_id == target_doc and texts:
+                return [(doc_id, page, texts[0])]
     return [("(unknown)", None, "(該当チャンクなし)")]
 
 
@@ -294,17 +292,13 @@ def filter_batch(
     perspectives = _split_perspectives(body)
 
     # Load and index chunks for per-QA lookup.
-    # 同一 (doc_id, page) に複数チャンクがあるため、ページ単位で全チャンク本文を
-    # 連結して持つ。1チャンクだけ残す実装だと、根拠が同ページの別チャンクにある
-    # ときに逐語照合が誤って外れる (モデル就業規則は1ページ最大6チャンク)。
+    # 同一 (doc_id, page) の全チャンクを候補リストとして持ち、rationale を含む
+    # チャンクを _find_chunk_texts が選ぶ。連結で1本にすると .txt 文書
+    # (page=None) で文書全体に膨張し、判定LLMの入力が流量制限を突破する。
     chunks = load_chunks(chunks_dir) if chunks_dir.exists() else []
-    chunk_index: dict[tuple[str, Optional[int]], str] = {}
+    chunk_index: dict[tuple[str, Optional[int]], list[str]] = {}
     for c in chunks:
-        key = (c.doc_id, c.page)
-        if key in chunk_index:
-            chunk_index[key] += "\n" + c.text
-        else:
-            chunk_index[key] = c.text
+        chunk_index.setdefault((c.doc_id, c.page), []).append(c.text)
 
     # Load QAs
     qas: list[QAItem] = []
