@@ -17,6 +17,7 @@ DifficultyMatch = Literal["aligned", "too_easy", "too_hard"]
 ReviewStatus = Literal["pending", "accepted", "edited", "rejected"]
 EvidenceStrictness = Literal["no-evidence", "hier-ref", "coord-ref", "multi-ref"]
 OutputType = Literal["summary", "trans", "list", "none"]
+RAGAnswerMatch = Literal["match", "partial", "no_match"]
 
 
 # ===== 根拠 =====
@@ -82,6 +83,35 @@ class FilterScores(BaseModel):
     rationale_grounded: Optional[float] = None
 
 
+# ===== Vector RAG ground-truth verification =====
+# `rageval rag-verify` で後付け。生成→判定の自己ループから外れた信号として
+# 「vector RAG で trivial に解ける問い」を識別するために持つ。
+
+class RAGVerification(BaseModel):
+    top_k: int
+    retrieved_chunk_ids: list[str]
+    # 文書一致: 根拠と同じ文書IDのチャンクが上位 k に1個でも入ったか。
+    # ただし1文書が50を超えるチャンクに割れる技報では、根拠と無関係な
+    # 章のチャンクが入っただけで真になるので、これだけでは過大評価になる。
+    retrieval_hit_doc: bool = False
+    # チャンク一致: 根拠本文 (rationale.text) を逐語で含むチャンクが
+    # 上位 k に入ったか。filter 側の逐語照合と同じ空白正規化規則を使う。
+    # KG-RAG の検索健全性を見る本命指標。
+    retrieval_hit_chunk: bool = False
+    # 旧フィールド (既存 JSONL との互換のため残置)。
+    # 新規書き出しでは retrieval_hit_doc と同じ値を入れる。
+    retrieval_hit: bool = False
+    rag_answer: str
+    answer_match: RAGAnswerMatch
+    # judge が返した生の判定文字列。想定外の値や空文字が来たときの事後検証用。
+    # 正常に match / partial / no_match が返ったときも、そのまま小文字化して保存する。
+    # judge を呼ばなかった場合 (rag_answer が空 / 回答不能) や judge が例外で落ちた場合は None。
+    judge_raw: Optional[str] = None
+    rag_model: str
+    judge_model: str
+    verified_at: datetime
+
+
 # ===== QA本体 =====
 
 class QAItem(BaseModel):
@@ -115,6 +145,7 @@ class QAItem(BaseModel):
     kg_query_type: Optional[KGQueryType] = None
     kg_novelty: Optional[KGNovelty] = None
     llm_knowledge: Optional[LLMKnowledge] = None   # `rageval probe` で後付け
+    rag_verification: Optional[RAGVerification] = None  # `rageval rag-verify` で後付け
 
     generation: GenerationInfo
     filter_scores: FilterScores = Field(default_factory=FilterScores)

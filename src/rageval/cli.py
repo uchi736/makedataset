@@ -28,6 +28,7 @@ from .chunker import (
 from .filter import filter_batch
 from .generate import generate_batch
 from .probe import probe_batch
+from .rag_verify import DEFAULT_TOP_K, rag_verify_batch
 
 load_dotenv()
 
@@ -153,12 +154,38 @@ def filter_cmd(
     skip_uniqueness: bool = typer.Option(False, help="Skip embedding-based dedup"),
     skip_leakage: bool = typer.Option(False, help="Don't reject QAs with leakage=fail (judge is conservative)"),
     rationale_grounded_min: float = typer.Option(
-        1.0,
+        0.5,
         help="Min fraction of rationale entries verifiable as chunk substrings. "
-             "1.0 = require ALL rationale to quote chunks verbatim. 0.0 = disable.",
+             "0.5 = 半数以上が逐語必須 (既定)。1.0 = 全件逐語必須。0.0 = 無効化。",
+    ),
+    reject_too_easy: bool = typer.Option(
+        False, "--reject-too-easy",
+        help="filter_scores.difficulty_match=='too_easy' の QA を棄却",
+    ),
+    require_rag_fail: bool = typer.Option(
+        False, "--require-rag-fail",
+        help="rag_verification.answer_match=='no_match' のものだけ残す "
+             "(KG-RAG が活きる問いの抽出)。rag-verify 未実行なら警告して無視",
+    ),
+    require_rag_hit: bool = typer.Option(
+        False, "--require-rag-hit",
+        help="rag_verification.answer_match=='match' のものだけ残す "
+             "(vector RAG で解ける問いの sanity-check 用)",
+    ),
+    require_rationale_retrieved: bool = typer.Option(
+        False, "--require-rationale-retrieved",
+        help="rag_verification.retrieval_hit_chunk=True (根拠本文を逐語で含むチャンクが"
+             "上位 k に入った) のものだけ残す。旧 JSONL は retrieval_hit (文書一致) で代用",
     ),
 ) -> None:
     """Apply 6-perspective judge scoring + threshold filter + dedup."""
+    if require_rag_fail and require_rag_hit:
+        typer.echo(
+            "[filter] ERROR: --require-rag-fail と --require-rag-hit は相反します "
+            "(no_match と match の両方は満たせず、全件 drop されます)",
+            err=True,
+        )
+        raise typer.Exit(2)
     filter_batch(
         raw_path=in_path,
         out_dir=out,
@@ -171,6 +198,10 @@ def filter_cmd(
         compute_uniqueness=not skip_uniqueness,
         require_leakage_pass=not skip_leakage,
         rationale_grounded_min=rationale_grounded_min,
+        reject_too_easy=reject_too_easy,
+        require_rag_fail=require_rag_fail,
+        require_rag_hit=require_rag_hit,
+        require_rationale_retrieved=require_rationale_retrieved,
     )
 
 
@@ -193,6 +224,38 @@ def probe(
         out_path=out_path,
         probe_model=probe_model,
         judge_model=judge_model,
+    )
+
+
+@app.command("rag-verify")
+def rag_verify_cmd(
+    in_path: Path = typer.Option(..., "--in", help="JSONL of QAs to verify"),
+    out_path: Optional[Path] = typer.Option(None, "--out", help="Output JSONL (default: overwrite --in)"),
+    chunks: Path = typer.Option(Path("data/chunks"), help="Chunks dir (検索対象)"),
+    top_k: int = typer.Option(DEFAULT_TOP_K, help="検索結果の上位件数"),
+    rag_model: str = typer.Option(
+        lambda: os.getenv("VLLM_MODEL", "google/gemma-4-26B-A4B-it"),
+        help="検索結果を context に回答するモデル (vector RAG 本番想定モデル)",
+    ),
+    judge_model: str = typer.Option(
+        lambda: os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini"),
+        help="候補回答と ground truth を照合するモデル",
+    ),
+    prompt: Path = typer.Option(Path("prompts/rag_verify.md")),
+) -> None:
+    """vector RAG が解けるかを ground truth として測り rag_verification を後付け。
+
+    質問を埋め込み → top-k チャンク取得 → そのチャンクだけを根拠に rag_model が回答
+    → judge_model が ground truth と照合し match/partial/no_match を返す。
+    """
+    rag_verify_batch(
+        in_path=in_path,
+        out_path=out_path,
+        chunks_dir=chunks,
+        top_k=top_k,
+        rag_model=rag_model,
+        judge_model=judge_model,
+        prompt_path=prompt,
     )
 
 

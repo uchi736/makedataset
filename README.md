@@ -46,6 +46,7 @@ data/raw/          (生成直後 QA JSONL, batch_YYYYMMDD_HHMM.jsonl)
   │  ③ filter                                            ← 判定LLM + 重複検知 (共通)
   ▼
 data/filtered/     (合格 QA)
+  │  ④' rag-verify (任意、トラック非依存。vector RAG が解けるかを ground truth として測る)
   │  ④ probe       (kg_poc のみ。llm_knowledge を後付け)
   │  ⑤ review / review-kg
   ▼
@@ -97,7 +98,8 @@ Python 3.12+ / `uv` 0.8+。
 | `discover-patterns` | ◯ | ◯ | コーパス固有の参照識別子を LLM に発見させる (任意) |
 | `generate --track general` | ◯ | — | 25観点ベースで QA 生成 |
 | `generate --track kg_poc [--mix ...]` | — | ◯ | 3軸ベースで QA 生成 |
-| `filter` | ◯ | ◯ | 判定LLMで6軸スコアリング + 重複検知 + 根拠検証 |
+| `filter` | ◯ | ◯ | 判定LLMで6軸スコアリング + 重複検知 + 根拠検証。`--reject-too-easy` / `--require-rag-fail` / `--require-rag-hit` / `--require-rationale-retrieved` で rag-verify 結果や難易度を使った絞り込みも可能 |
+| `rag-verify` | ◯ | ◯ | 検索付きで vector RAG が解けるかを ground truth として測り `rag_verification` を付与 (トラック非依存) |
 | `probe` | — | ◯ | 素の LLM に同じ質問を投げて `llm_knowledge` を付与 |
 | `review` | ◯ | — | レビューUI (general 用チェックリスト) |
 | `review-kg` | — | ◯ | レビューUI (KG適性チェックリスト付き) |
@@ -313,15 +315,88 @@ uv run rageval filter \
 | `leakage` | `pass`/`fail` | `--skip-leakage` で無効化可 |
 | `difficulty_match` | `aligned`/`too_easy`/`too_hard` | 棄却条件には使わない (タグのみ) |
 | `uniqueness` (埋め込みコサイン由来) | 0〜1 | `--uniqueness-max 0.92` 超で重複扱い |
-| `rationale_grounded` (決定論) | 0〜1 | `--rationale-grounded-min 1.0` |
+| `rationale_grounded` (決定論) | 0〜1 | `--rationale-grounded-min 0.5` |
 
 `rationale_grounded` は判定LLMを使わず、QAItem の `rationale[].text` がアンカーチャンクに
 **空白を無視してそのまま含まれているか** で照合 ([filter.py:85-102](src/rageval/filter.py#L85-L102))。
-既定は 1.0 (すべての rationale が逐語引用必須)。
+既定は 0.5 で、半数以上の rationale が逐語で見つかれば通す (1.0 = 全件逐語必須、0.5 = 半数以上が逐語必須 (新既定)、判定LLMが整形した語順差を許容するために緩めた)。
 
 `--skip-uniqueness` で埋め込み呼び出しを丸ごとスキップ。
 
-### レビューUI 共通の振る舞い
+---
+
+## 共通段: vector RAG での実走検証 (任意, 両トラック)
+
+### `rag-verify` — 検索付きで解けるか ground truth として測る
+
+生成→判定の LLM 自己ループから外れた信号を1本入れるための段。
+「この QA は素の vector RAG でも解けてしまうのか」を実走で確かめ、結果を `qa.rag_verification`
+として埋め込んでおく。kg_poc では「ベクター検索で解けない問い (= KG-RAG が活きる場面)」を
+抜き出す根拠になり、general でも難易度タグの妥当性チェックに使える。
+
+[rag_verify.py](src/rageval/rag_verify.py) の流れ:
+
+1. 質問を Ruri (`VLLM_EMBEDDING_MODEL`) で埋め込み、チャンク埋め込みとのコサインで top-k を取得 (同点時は元の順序を保つ安定ソート)
+2. 上位 k チャンクだけを根拠に RAG モデル (`--rag-model`、本番想定モデル) が回答
+3. 「回答不能」「不明」「該当なし」等の言い回しは無回答扱いに正規化 ([rag_verify.py の `_is_unable_answer`](src/rageval/rag_verify.py))
+4. 判定LLM (`--judge-model`) が ground truth と候補回答を照合し `match` / `partial` / `no_match` を返す
+5. **検索命中は2粒度で記録**: 根拠と同じ doc_id のチャンクが上位に居れば `retrieval_hit_doc=true`、根拠本文を逐語で含むチャンクが上位に居れば `retrieval_hit_chunk=true` (本命指標)
+6. 1問ずつ追記書き出しなので、長時間バッチが Ctrl-C / API 全断で途中で死んでも処理済み分は残る
+
+```bash
+uv run rageval rag-verify \
+  --in data/filtered/batch_YYYYMMDD_HHMM.jsonl \
+  --chunks data/chunks --top-k 5 \
+  --rag-model "$VLLM_MODEL" \
+  --judge-model "$AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"
+# --out を省略すると --in を上書き
+```
+
+書き込まれる `qa.rag_verification` ([schema.py](src/rageval/schema.py) `RAGVerification`):
+
+| フィールド | 中身 |
+|---|---|
+| `top_k` | 検索で見た上位件数 |
+| `retrieved_chunk_ids` | 実際に渡したチャンクID列 (順位保持) |
+| `retrieval_hit_doc` | 根拠と同じ doc_id のチャンクが上位 k に1個でも入ったか (bool) |
+| `retrieval_hit_chunk` | 根拠本文を逐語で含むチャンクが上位 k に入ったか。**KG-RAG の検索健全性を見る本命指標** |
+| `retrieval_hit` | 旧フィールド。既存 JSONL との互換のため残置 (`retrieval_hit_doc` と同じ値) |
+| `rag_answer` | RAG モデルが top-k から書いた回答文 (回答不能や API 失敗時は空文字) |
+| `answer_match` | 判定LLMの照合結果。`match` / `partial` / `no_match` |
+| `judge_raw` | 判定LLMが返した生の verdict 文字列。想定外応答 (例: `matched`) のときの事後検証用 |
+| `rag_model` / `judge_model` / `verified_at` | 実行時メタ |
+
+> **2粒度の使い分け**: 1文書が50チャンクを超えるコーパス (プラント技報など) では、根拠と無関係な章のチャンクが上位に入っただけで `retrieval_hit_doc` が真になり過大評価になる。本命の検索健全性は `retrieval_hit_chunk` を見る。
+
+### `filter` で活用する (再フィルタ用フラグ)
+
+`rag-verify` 実行後の JSONL をもう一度 `filter` にかければ、検証結果で絞り込める。
+`rag_verification` が未付与の QA に対してこれらのフラグを指定したときは警告を出して条件を無視する
+ので、未実行ファイルに当てて全件 drop する事故は起きない ([filter.py:335-346](src/rageval/filter.py#L335-L346))。
+
+| フラグ | 残す条件 | 主な使いどころ |
+|---|---|---|
+| `--require-rag-fail` | `answer_match == "no_match"` | vector RAG が解けない問いだけを残す (KG-RAG が活きる主戦場の抽出) |
+| `--require-rag-hit` | `answer_match == "match"` | vector RAG で解ける問いだけを残す (難易度タグの動作確認用) |
+| `--require-rationale-retrieved` | `retrieval_hit_chunk == true` (旧データは `retrieval_hit` にフォールバック) | 根拠本文を逐語で含むチャンクが上位 k に入ったものだけ残す (検索健全性で切り出し) |
+| `--reject-too-easy` | `difficulty_match != "too_easy"` | 判定LLMが「易しすぎる」と判定した QA を落とす (rag-verify 不要、難易度ベース) |
+
+> `--require-rag-fail` と `--require-rag-hit` は相反する条件なので、同時指定すると ValueError で早期に弾く ([filter.py の冒頭ガード](src/rageval/filter.py))。rag_verification がまだら (一部の QA だけに付いている) 状態では、未付与の件数を警告で出した上で「rag-verify 済みの QA だけ」に条件を適用する。
+
+### 集計画面の「RAG検証」タブ
+
+`stats` / `stats-kg` で開くダッシュボードには **RAG検証** タブが追加されている ([stats_app.py の `_render_rag_verify_tab`](src/rageval/stats_app.py))。表示内容:
+
+- 健全性 KPI (検証済QA / 一致 / 部分一致 / 不一致(KG候補))
+- 一致判定の分布 (緑=一致 / 黄=部分一致 / 赤=不一致) と検索命中の分布
+- 観点別の判定割合 (不一致率の高い観点を上にソート)
+- **KG候補リスト**: `判定LLMが答えあり (≥4) または未判定 + 不一致` の QA を表で列挙。QA-ID / 観点 / 質問 / 正答 / RAGの回答 / 検索命中 / 答えやすさ の列を持ち、これを目視確認すれば KG-RAG が活きる問いの当たりが付く
+
+rag_verification が無いデータを開いた場合は警告だけ出して何も表示しない。
+
+---
+
+## 共通段: レビューUI 共通の振る舞い
 
 `review` / `review-kg` ([review_app.py](src/rageval/review_app.py)):
 

@@ -18,6 +18,9 @@ DEFAULT_PROMPT = "prompts/judge.md"
 DEFAULT_ANSWERABILITY_MIN = 4.0
 DEFAULT_GROUNDING_MIN = 4.0
 DEFAULT_UNIQUENESS_MAX = 0.92  # cosine similarity above this = duplicate
+# 1.0 = 全 rationale が逐語必須。0.5 に緩めると LLM の整形差を許容できる。
+# 2026-05-29 に Gemma 4 で 8% → 24% 通過率に改善した実測から 0.5 を既定化。
+DEFAULT_RATIONALE_GROUNDED_MIN = 0.5
 
 # Perspective ids used in prompts/judge.md
 PERSPECTIVES = [
@@ -283,11 +286,24 @@ def filter_batch(
     answerability_min: float = DEFAULT_ANSWERABILITY_MIN,
     grounding_min: float = DEFAULT_GROUNDING_MIN,
     uniqueness_max: float = DEFAULT_UNIQUENESS_MAX,
-    rationale_grounded_min: float = 1.0,
+    rationale_grounded_min: float = DEFAULT_RATIONALE_GROUNDED_MIN,
     compute_uniqueness: bool = True,
     require_leakage_pass: bool = True,
+    reject_too_easy: bool = False,
+    require_rag_fail: bool = False,
+    require_rag_hit: bool = False,
+    require_rationale_retrieved: bool = False,
 ) -> Path:
     """Score each QA with judge LLM + dedup, drop failures, write filtered JSONL."""
+    # `--require-rag-fail` (answer_match != 'no_match' を落とす) と
+    # `--require-rag-hit` (answer_match != 'match' を落とす) は相反する条件で、
+    # 同時指定すると rag_verification 付きの QA は必ずどちらかに引っかかり
+    # 全件 drop される。CLI 経由でない呼び出しでも気付けるよう、ここで早期に弾く。
+    if require_rag_fail and require_rag_hit:
+        raise ValueError(
+            "require_rag_fail と require_rag_hit は同時指定できません "
+            "(no_match と match の両方を満たす QA は存在せず、全件 drop されます)"
+        )
     _, body = load_prompt(str(prompt_path))
     perspectives = _split_perspectives(body)
 
@@ -325,10 +341,35 @@ def filter_batch(
         for qa, s in zip(qas, sims):
             qa.filter_scores.uniqueness = 1.0 - float(s)
 
+    # `--require-rag-*` 系は rag-verify 未実行時に全件 drop しないよう、
+    # 1件でも rag_verification 持ちが居なければ警告を出して無視する。
+    rag_required = require_rag_fail or require_rag_hit or require_rationale_retrieved
+    rag_present = any(qa.rag_verification is not None for qa in qas)
+    missing = sum(1 for qa in qas if qa.rag_verification is None)
+    if rag_required and not rag_present:
+        print(
+            "[filter] WARNING: --require-rag-* 指定だが rag_verification が無い"
+            " — rag-verify 未実行のため当該条件はスキップ"
+        )
+        require_rag_fail = False
+        require_rag_hit = False
+        require_rationale_retrieved = False
+    elif rag_required and rag_present and missing > 0:
+        # 一部の QA だけ rag-verify 済みで、残りは未付与というまだら状態。
+        # 後段のガード (rv is not None) が掛かるため、未付与の QA は
+        # --require-rag-* 条件を素通りして残ってしまう。利用者が
+        # それに気付けるよう、件数を明示して通知する。
+        print(
+            f"[filter] WARNING: {missing}/{len(qas)} 件に rag_verification が無く、"
+            "--require-rag-* 条件はそれらでは判定されません。"
+            "rag-verify を流し直すか、対象を絞り込んでください"
+        )
+
     # Apply thresholds
     kept: list[QAItem] = []
     for qa in qas:
         fs = qa.filter_scores
+        rv = qa.rag_verification
         reasons: list[str] = []
         if fs.answerability is not None and fs.answerability < answerability_min:
             reasons.append(f"answerability={fs.answerability}")
@@ -340,6 +381,20 @@ def filter_batch(
             reasons.append(f"uniqueness={fs.uniqueness:.3f}")
         if fs.rationale_grounded is not None and fs.rationale_grounded < rationale_grounded_min:
             reasons.append(f"rationale_grounded={fs.rationale_grounded:.2f}")
+        if reject_too_easy and fs.difficulty_match == "too_easy":
+            reasons.append("difficulty_match=too_easy")
+        if require_rag_fail and rv is not None and rv.answer_match != "no_match":
+            reasons.append(f"rag_answer_match={rv.answer_match} (require no_match)")
+        if require_rag_hit and rv is not None and rv.answer_match != "match":
+            reasons.append(f"rag_answer_match={rv.answer_match} (require match)")
+        if require_rationale_retrieved and rv is not None:
+            # 旧 JSONL は retrieval_hit_chunk が未設定 (既定 False) で書かれているので、
+            # 当該フィールドが両方とも False かつ retrieval_hit (旧フィールド) が真のときは
+            # 旧フォーマットの「文書一致」として扱い、ふるい分けを通す。
+            hit_chunk = rv.retrieval_hit_chunk
+            legacy_only = not rv.retrieval_hit_chunk and not rv.retrieval_hit_doc
+            if not hit_chunk and not (legacy_only and rv.retrieval_hit):
+                reasons.append("rag_retrieval_hit_chunk=False")
         if reasons:
             print(f"[filter] drop {qa.qa_id}: {', '.join(reasons)} (scores={fs.model_dump()})")
             continue

@@ -77,6 +77,15 @@ EVIDENCE_STRICTNESS_COLORS = {
     "coord-ref":   "#06b6d4",
     "multi-ref":   "#8b5cf6",
 }
+RAG_ANSWER_MATCH_COLORS = {
+    "match":    "#22c55e",
+    "partial":  "#f59e0b",
+    "no_match": "#ef4444",
+}
+RAG_RETRIEVAL_HIT_COLORS = {
+    "true":  "#22c55e",
+    "false": "#ef4444",
+}
 
 # ---------------- Display labels (内部値=英語、表示=日本語) ----------------
 
@@ -103,6 +112,15 @@ EVIDENCE_STRICTNESS_LABELS = {
     "hier-ref":    "単一根拠",
     "coord-ref":   "並列根拠",
     "multi-ref":   "複数根拠厳密",
+}
+RAG_ANSWER_MATCH_LABELS = {
+    "match":    "一致",
+    "partial":  "部分一致",
+    "no_match": "不一致",
+}
+RAG_RETRIEVAL_HIT_LABELS = {
+    "true":  "命中",
+    "false": "外れ",
 }
 
 # ---------------- IO ----------------
@@ -181,6 +199,20 @@ def _to_dataframe(items: list[dict]) -> pd.DataFrame:
         ss = it.get("source_structure") or {}
         expl = it.get("explainability") or {}
         rd = it.get("retrieval_difficulty") or {}
+        rv = it.get("rag_verification") or None
+        if rv:
+            rag_answer_match = rv.get("answer_match")
+            raw_hit = rv.get("retrieval_hit")
+            rag_retrieval_hit = bool(raw_hit) if raw_hit is not None else None
+            rag_top_k = rv.get("top_k")
+            rag_model = rv.get("rag_model")
+            rag_answer = rv.get("rag_answer")
+        else:
+            rag_answer_match = None
+            rag_retrieval_hit = None
+            rag_top_k = None
+            rag_model = None
+            rag_answer = None
         rows.append({
             "qa_id": it.get("qa_id"),
             "source": it.get("__source"),
@@ -210,6 +242,11 @@ def _to_dataframe(items: list[dict]) -> pd.DataFrame:
             "difficulty_match": fs.get("difficulty_match"),
             "model": gen.get("model"),
             "prompt_version": gen.get("prompt_version"),
+            "rag_answer_match": rag_answer_match,
+            "rag_retrieval_hit": rag_retrieval_hit,
+            "rag_top_k": rag_top_k,
+            "rag_model": rag_model,
+            "rag_answer": rag_answer,
         })
     return pd.DataFrame(rows)
 
@@ -783,7 +820,7 @@ def main() -> None:
 
     # KG-PoC専用ダッシュボード
     if track_filter == "kg_poc":
-        kg_labels = ["KG-PoC概要", "バランス", "品質スコア", "一覧", "レビュー", "個別表示"]
+        kg_labels = ["KG-PoC概要", "バランス", "品質スコア", "一覧", "レビュー", "RAG検証", "個別表示"]
         kg_tabs = st.tabs(kg_labels)
         with kg_tabs[0]:
             _render_kg_tab(df)
@@ -805,17 +842,22 @@ def main() -> None:
                 track_label="[KG-PoC]",
             )
         with kg_tabs[5]:
+            _render_rag_verify_tab(df)
+        with kg_tabs[6]:
             _render_detail_tab(df, items)
         return
 
     # general/all track: 概要にバランスを統合し、独立タブは廃止
     has_kg = df["kg_query_type"].notna().any() or df["kg_novelty"].notna().any()
-    tab_labels = ["概要", "カバレッジ", "品質スコア", "一覧", "レビュー", "個別表示"]
+    tab_labels = ["概要", "カバレッジ", "品質スコア", "一覧", "レビュー", "RAG検証", "個別表示"]
     if has_kg:
         tab_labels.append("KG-PoC")
     tabs = st.tabs(tab_labels)
-    tab_overview, tab_coverage, tab_quality, tab_list, tab_review, tab_detail = tabs[:6]
-    tab_kg = tabs[6] if has_kg else None
+    (
+        tab_overview, tab_coverage, tab_quality, tab_list,
+        tab_review, tab_rag_verify, tab_detail,
+    ) = tabs[:7]
+    tab_kg = tabs[7] if has_kg else None
     with tab_review:
         render_review_panel(
             items=st.session_state.review_qas,
@@ -852,7 +894,16 @@ def main() -> None:
             quality_rate = None
             quality_text = "未判定"
 
-        k1, k2, k3, k4 = st.columns(4)
+        rag_verified = int(df["rag_answer_match"].notna().sum()) if "rag_answer_match" in df.columns else 0
+        if rag_verified > 0:
+            rag_match = int((df["rag_answer_match"] == "match").sum())
+            rag_pass_rate = rag_match / rag_verified
+            rag_pass_text = f"{rag_pass_rate:.0%} ({rag_match}/{rag_verified})"
+        else:
+            rag_pass_rate = None
+            rag_pass_text = "—"
+
+        k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric(
             f"件数達成 (目標 {lo}-{hi})",
             f"{n_total} 件",
@@ -873,9 +924,20 @@ def main() -> None:
             "品質ゲート通過率",
             quality_text,
             delta=None if quality_rate is None else (
-                "✓ 健全" if quality_rate >= 0.7 else "要改善"
+                "健全" if quality_rate >= 0.7 else "要改善"
             ),
             delta_color="normal" if (quality_rate or 0) >= 0.7 else "inverse",
+        )
+        k5.metric(
+            "RAG検証通過率",
+            rag_pass_text,
+            delta=None if rag_pass_rate is None else (
+                "vector RAGで充足" if rag_pass_rate >= 0.7 else "KG候補多め"
+            ),
+            delta_color="off" if rag_pass_rate is None else (
+                "normal" if rag_pass_rate >= 0.7 else "inverse"
+            ),
+            help="rag_verification 未実行時は '—'",
         )
 
         st.divider()
@@ -972,6 +1034,10 @@ def main() -> None:
     with tab_list:
         _render_list_tab(df)
 
+    # ===== RAG検証 =====
+    with tab_rag_verify:
+        _render_rag_verify_tab(df)
+
     # ===== 個別表示 =====
     with tab_detail:
         _render_detail_tab(df, items)
@@ -980,6 +1046,173 @@ def main() -> None:
     if tab_kg is not None:
         with tab_kg:
             _render_kg_tab(df)
+
+
+def _render_rag_verify_tab(df: pd.DataFrame) -> None:
+    """RAG検証タブ: vector RAG が trivial に解ける問いを識別して KG 候補を浮かび上がらせる。"""
+    verified_count = int(df["rag_answer_match"].notna().sum()) if "rag_answer_match" in df.columns else 0
+    if verified_count == 0:
+        st.warning("このデータには rag_verification がありません。'rageval rag-verify' を先に走らせてください。")
+        return
+
+    # --- 健全性 KPI ---
+    n_match = int((df["rag_answer_match"] == "match").sum())
+    n_partial = int((df["rag_answer_match"] == "partial").sum())
+    n_no_match = int((df["rag_answer_match"] == "no_match").sum())
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("検証済QA", verified_count)
+    k2.metric("一致 (vector RAGが正答)", n_match)
+    k3.metric("部分一致", n_partial)
+    k4.metric("不一致 (KG候補)", n_no_match)
+
+    st.divider()
+
+    # --- 一致判定の分布 ---
+    st.markdown("#### 一致判定の分布")
+    st.caption("緑=一致 / 黄=部分一致 / 赤=不一致。赤が多いほど vector RAG では拾えていない問い (KG候補)。")
+    verified_df = df.dropna(subset=["rag_answer_match"])
+    st.altair_chart(
+        _row_bar(
+            verified_df, "rag_answer_match",
+            ["match", "partial", "no_match"],
+            color_map=RAG_ANSWER_MATCH_COLORS,
+            label_map=RAG_ANSWER_MATCH_LABELS,
+            show_legend=True,
+        ),
+        width="stretch",
+    )
+
+    # --- 検索命中の分布 ---
+    st.markdown("#### 検索命中の分布")
+    st.caption("rationale チャンクが top-k に1個でも含まれたか。外れが多いと検索段階で取りこぼしている。")
+    hit_df = df.dropna(subset=["rag_retrieval_hit"]).copy()
+    # bool を str に変換して _row_bar に渡す
+    hit_df["rag_retrieval_hit_str"] = hit_df["rag_retrieval_hit"].map(
+        lambda b: "true" if bool(b) else "false"
+    )
+    st.altair_chart(
+        _row_bar(
+            hit_df, "rag_retrieval_hit_str",
+            ["true", "false"],
+            color_map=RAG_RETRIEVAL_HIT_COLORS,
+            label_map=RAG_RETRIEVAL_HIT_LABELS,
+            show_legend=True,
+        ),
+        width="stretch",
+    )
+
+    # --- 観点別の判定割合 ---
+    st.markdown("#### 観点別の判定割合")
+    st.caption("不一致の割合が高い観点が上 (= ベクトル検索が苦手な観点)。色: 緑=一致 / 黄=部分一致 / 赤=不一致。棒の長さは観点ごとの母数に対する割合。")
+    exploded = verified_df.explode("aspect_list").dropna(subset=["aspect_list"])
+    if not exploded.empty:
+        agg_rows = []
+        for asp, sub in exploded.groupby("aspect_list"):
+            total = len(sub)
+            if total == 0:
+                continue
+            for verdict in ["match", "partial", "no_match"]:
+                n = int((sub["rag_answer_match"] == verdict).sum())
+                agg_rows.append({
+                    "aspect": asp,
+                    "display": ASPECT_LABELS.get(asp, asp),
+                    "verdict": verdict,
+                    "verdict_label": RAG_ANSWER_MATCH_LABELS[verdict],
+                    "count": n,
+                    "ratio": n / total,
+                    "total": total,
+                    "no_match_rate": int((sub["rag_answer_match"] == "no_match").sum()) / total,
+                })
+        if agg_rows:
+            adf = pd.DataFrame(agg_rows)
+            # 不一致率の高い観点を上に
+            sort_df = adf.groupby("display")["no_match_rate"].max().sort_values(ascending=False)
+            sort_order = sort_df.index.tolist()
+
+            verdict_order = ["match", "partial", "no_match"]
+            verdict_label_order = [RAG_ANSWER_MATCH_LABELS[v] for v in verdict_order]
+            verdict_color_range = [RAG_ANSWER_MATCH_COLORS[v] for v in verdict_order]
+
+            chart = (
+                alt.Chart(adf)
+                .mark_bar()
+                .encode(
+                    x=alt.X("ratio:Q", title="割合",
+                            stack="zero",
+                            axis=alt.Axis(format="%", titleFont=JP_FONT)),
+                    y=alt.Y("display:N", sort=sort_order, title=None,
+                            axis=alt.Axis(labelFont=JP_FONT, labelLimit=240)),
+                    color=alt.Color(
+                        "verdict_label:N",
+                        scale=alt.Scale(domain=verdict_label_order, range=verdict_color_range),
+                        legend=alt.Legend(orient="top", title=None,
+                                          labelFont=JP_FONT, labelFontSize=12),
+                    ),
+                    order=alt.Order("verdict:N", sort="ascending"),
+                    tooltip=[
+                        alt.Tooltip("display:N", title="観点"),
+                        alt.Tooltip("verdict_label:N", title="判定"),
+                        alt.Tooltip("count:Q", title="件数"),
+                        alt.Tooltip("total:Q", title="観点母数"),
+                        alt.Tooltip("ratio:Q", title="割合", format=".1%"),
+                    ],
+                )
+                .properties(height=alt.Step(28))
+            )
+            st.altair_chart(chart, width="stretch")
+        else:
+            st.info("観点情報がありません。")
+    else:
+        st.info("観点情報がありません (KG-PoC track の可能性)。")
+
+    st.divider()
+
+    # --- KG-opportunity 候補リスト ---
+    st.markdown("#### KG候補リスト (vector RAG が落とした問い)")
+    st.caption("judge が答えあり と認めた、または未判定で、vector RAG が落とした問い")
+    cand = df[
+        (df["answerability"].isna() | (df["answerability"] >= 4))
+        & (df["rag_answer_match"] == "no_match")
+    ].copy()
+    if cand.empty:
+        st.success("KG候補に該当する問いはありません。vector RAG が十分にカバーしています。")
+    else:
+        cand["観点"] = cand["aspect_list"].apply(
+            lambda lst: ", ".join(ASPECT_LABELS.get(a, a) for a in lst) if isinstance(lst, list) else ""
+        )
+        view = cand[[
+            "qa_id", "観点", "question", "answer",
+            "rag_answer", "rag_retrieval_hit", "answerability",
+        ]].rename(columns={
+            "qa_id":             "QA-ID",
+            "question":          "質問",
+            "answer":            "正答",
+            "rag_answer":        "RAG の回答",
+            "rag_retrieval_hit": "検索命中",
+            "answerability":     "答えやすさ",
+        })
+        st.dataframe(
+            view, width="stretch", hide_index=True, height=420,
+            column_config={
+                "QA-ID": st.column_config.TextColumn(width="small"),
+                "観点": st.column_config.TextColumn(width="medium"),
+                "質問": st.column_config.TextColumn(width="large"),
+                "正答": st.column_config.TextColumn(width="large"),
+                "RAG の回答": st.column_config.TextColumn(
+                    width="large",
+                    help="vector RAG が返した回答",
+                ),
+                "検索命中": st.column_config.CheckboxColumn(
+                    width="small",
+                    help="根拠チャンクが top-k に含まれたか",
+                ),
+                "答えやすさ": st.column_config.NumberColumn(
+                    width="small", format="%.1f",
+                    help="judge が判定した答えやすさ (4以上で 'judge は答えあり' と認定)",
+                ),
+            },
+        )
 
 
 def _render_kg_tab(df: pd.DataFrame) -> None:
