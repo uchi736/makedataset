@@ -26,3 +26,7 @@ data/*
 
 # Pytest
 .pytest_cache/
+
+# Scratch logs and refs (session artifacts)
+_tmp_*.log
+_tmp_*.txt

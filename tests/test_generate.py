@@ -15,7 +15,7 @@ MOCK_QA_JSON = {
     "question": "製品Xの動作電圧範囲は何ボルトですか？",
     "answer": "DC 21.6V〜26.4V (24V±10%) です。",
     "rationale": [
-        {"doc_id": "sample", "page": None, "text": "定格電圧: DC 24V ±10%"}
+        {"doc_id": "sample", "page": None, "text": "製品Xの定格電圧は DC 24V ±10% で、許容範囲は 21.6V〜26.4V とする"}
     ],
     "category": ["Reasoning"],
     "aspect": ["quantitative_calc"],
@@ -125,6 +125,330 @@ def test_detect_fabricated_terms_ignores_short_katakana():
     # 3-char katakana words shouldn't trip the filter (too noisy)
     fab = detect_fabricated_terms("ナット を締める", chunks)
     assert fab == []
+
+
+# ---------- 多 doc アンカー × 単一 doc rationale 検出 ----------
+
+def _make_minimal_qa(rationale_doc_ids: list[str]) -> "QAItem":
+    """rationale.doc_id だけを変えた最小 QAItem (他はテストに無関係)"""
+    from datetime import datetime
+    from rageval.schema import (
+        QAItem, Rationale, ReasoningComplexity, RetrievalDifficulty,
+        SourceStructure, Explainability, GenerationInfo,
+    )
+    return QAItem(
+        qa_id="qx", question="Q?", answer="A",
+        rationale=[Rationale(doc_id=d, page=None, text="x") for d in rationale_doc_ids],
+        category=["Reasoning"], aspect=["multi_hop"],
+        reasoning_complexity=ReasoningComplexity(),
+        retrieval_difficulty=RetrievalDifficulty(),
+        source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level="Easy", answer_level="Easy",
+        difficulty_rationale="test",
+        generation=GenerationInfo(model="m", prompt_version="v", generated_at=datetime.now()),
+    )
+
+
+def test_single_doc_rationale_with_multi_anchor_flags_violation():
+    from rageval.generate import detect_single_doc_rationale_with_multi_anchor
+    from rageval.schema import Chunk
+    # アンカーは 2 doc (docA + docB) だが rationale は docA のみ → 違反
+    anchors = [
+        Chunk(chunk_id="docA__c0", doc_id="docA", text="t"),
+        Chunk(chunk_id="docB__c0", doc_id="docB", text="t"),
+    ]
+    qa = _make_minimal_qa(rationale_doc_ids=["docA"])
+    result = detect_single_doc_rationale_with_multi_anchor(qa, anchors)
+    assert result is not None
+    anchor_docs, rat_docs = result
+    assert anchor_docs == {"docA", "docB"}
+    assert rat_docs == {"docA"}
+
+
+def test_single_doc_rationale_with_multi_anchor_passes_when_rationale_spans():
+    from rageval.generate import detect_single_doc_rationale_with_multi_anchor
+    from rageval.schema import Chunk
+    # アンカー 2 doc、rationale も 2 doc → OK
+    anchors = [
+        Chunk(chunk_id="docA__c0", doc_id="docA", text="t"),
+        Chunk(chunk_id="docB__c0", doc_id="docB", text="t"),
+    ]
+    qa = _make_minimal_qa(rationale_doc_ids=["docA", "docB"])
+    assert detect_single_doc_rationale_with_multi_anchor(qa, anchors) is None
+
+
+def test_single_doc_rationale_with_multi_anchor_passes_single_doc_anchor():
+    from rageval.generate import detect_single_doc_rationale_with_multi_anchor
+    from rageval.schema import Chunk
+    # アンカーが元から 1 doc なら検査対象外
+    anchors = [Chunk(chunk_id="docA__c0", doc_id="docA", text="t")]
+    qa = _make_minimal_qa(rationale_doc_ids=["docA"])
+    assert detect_single_doc_rationale_with_multi_anchor(qa, anchors) is None
+
+
+# ---------- 場所当て検出 ----------
+
+def test_detect_place_finding_question_flags_dono_jobun():
+    from rageval.generate import detect_place_finding_question
+    found = detect_place_finding_question(
+        "液化ガス設備で、どの条文の規定に適合していればよいか教えてください。"
+    )
+    assert "どの条文" in found
+
+
+def test_detect_place_finding_question_flags_nani_jou():
+    from rageval.generate import detect_place_finding_question
+    found = detect_place_finding_question("規定は第何条に書かれていますか?")
+    assert "第何条" in found
+
+
+def test_detect_place_finding_question_does_not_flag_content_question():
+    """「どの試験」「どの基準」のような中身を問う表現は弾かない。"""
+    from rageval.generate import detect_place_finding_question
+    found = detect_place_finding_question(
+        "管寄せの形状を評価したい。どの試験を実施してどの基準を満たせばよいか教えてください。"
+    )
+    assert found == []
+
+
+def test_detect_place_finding_question_does_not_flag_dono_kitei():
+    """「どの規定 (内容を問う)」は場所当てではない。"""
+    from rageval.generate import detect_place_finding_question
+    found = detect_place_finding_question("どの規定に従えばよいですか")
+    assert found == []
+
+
+# ---------- 条文番号列挙の検出 (v1.8) ----------
+
+def test_detect_article_enumeration_flags_3_or_more():
+    """質問に第N条が 3 個以上は試験文体の徴候。"""
+    from rageval.generate import detect_article_enumeration
+    n = detect_article_enumeration(
+        "省令の第5条、第10条、第11条、第12条、第15条に関連する様式は何ですか"
+    )
+    assert n == 5
+
+
+def test_detect_article_enumeration_allows_single_article():
+    """1 個なら実務者が知っている根拠引用の範囲、許容。"""
+    from rageval.generate import detect_article_enumeration
+    n = detect_article_enumeration("第59条に関連する設計をしている")
+    assert n == 1
+
+
+def test_detect_article_enumeration_counts_distinct_only():
+    """同じ「第59条」が複数回出ても 1 と数える。"""
+    from rageval.generate import detect_article_enumeration
+    n = detect_article_enumeration("第59条の規定について、第59条に紐づく様式は")
+    assert n == 1
+
+
+# ---------- 経歴ピボットの検出 (v1.8) ----------
+
+def test_detect_career_pivot_flags_experience_then_pivot():
+    """「Xの経験者がYに従事する場合」を捉える。"""
+    from rageval.generate import detect_career_pivot
+    found = detect_career_pivot(
+        "防毒呼吸具の研究や設計に従事した経験がある者が、液化ガス容器の設計に関わる場合、許容応力は…"
+    )
+    assert len(found) > 0
+
+
+def test_detect_career_pivot_flags_keiken_settei():
+    from rageval.generate import detect_career_pivot
+    found = detect_career_pivot(
+        "ボイラーの設計に従事した経験がある技術者が、新しい圧力容器を設計するときに参照すべき規格は"
+    )
+    assert len(found) > 0
+
+
+def test_detect_career_pivot_does_not_flag_normal_question():
+    """普通の実務質問は弾かない。"""
+    from rageval.generate import detect_career_pivot
+    found = detect_career_pivot(
+        "圧力容器のふた板を設計している。守るべき規格や附属書を教えてほしい"
+    )
+    assert found == []
+
+
+# ---------- 既知前提引用の検出 (v1.9) ----------
+
+def test_detect_known_premise_quote_flags_kanren_jiko():
+    from rageval.generate import detect_known_premise_quote
+    found = detect_known_premise_quote(
+        "圧力容器の設計において、第59条に関連する事項を確認したいと考えています。第59条に関連する様式はどれですか。"
+    )
+    assert len(found) > 0
+
+
+def test_detect_known_premise_quote_flags_kanren_youshiki():
+    from rageval.generate import detect_known_premise_quote
+    found = detect_known_premise_quote(
+        "第14条に関連する様式は何ですか"
+    )
+    assert len(found) > 0
+
+
+def test_detect_known_premise_quote_does_not_flag_natural_phrase():
+    """「第N条の規定により」「第N条の場合は」など状況記述は弾かない。"""
+    from rageval.generate import detect_known_premise_quote
+    found = detect_known_premise_quote(
+        "圧力容器のふた板を設計している。第59条の規定により補強が必要な場合の判定基準は"
+    )
+    assert found == []
+
+
+# ---------- v1.9 既知前提引用の隠れ変種 ----------
+
+def test_detect_known_premise_quote_flags_kakko_article():
+    """質問文の括弧書き条文番号 (第77条) を弾く。"""
+    from rageval.generate import detect_known_premise_quote
+    found = detect_known_premise_quote(
+        "計測装置に関する規定（第77条）に関連して使用すべき様式はどれですか"
+    )
+    assert len(found) > 0
+
+
+def test_detect_known_premise_quote_flags_kitei_ni_jun_jite():
+    """「第N条の規定に準じて」を弾く。"""
+    from rageval.generate import detect_known_premise_quote
+    found = detect_known_premise_quote(
+        "穴の径が規定のdの値の0.5倍以下である場合、第59条第3項の規定に準じて補強を行いたい"
+    )
+    assert len(found) > 0
+
+
+def test_detect_known_premise_quote_flags_motozuite():
+    """「第N条に基づいて」を弾く。"""
+    from rageval.generate import detect_known_premise_quote
+    found = detect_known_premise_quote(
+        "第6条第5項の規定に基づいて補強計算を行いたい"
+    )
+    assert len(found) > 0
+
+
+# ---------- v1.9 断片 rationale 検出 ----------
+
+def _make_test_qa(rationale_list):
+    """テスト用 QAItem を最小フィールドで作るヘルパ。"""
+    from rageval.schema import (
+        QAItem, Rationale, ReasoningComplexity, RetrievalDifficulty,
+        SourceStructure, Explainability, GenerationInfo,
+    )
+    return QAItem(
+        qa_id="test", question="?", answer="!",
+        rationale=[Rationale(**r) for r in rationale_list],
+        reasoning_complexity=ReasoningComplexity(),
+        retrieval_difficulty=RetrievalDifficulty(),
+        source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level="Hard", answer_level="Hard", difficulty_rationale="x",
+        generation=GenerationInfo(model="t", prompt_version="v", generated_at="2026-06-27T00:00:00"),
+    )
+
+
+def test_detect_fragment_rationale_flags_article_number_only():
+    """rationale.text が「第１０７条, 第１項」のような番号断片だけのものを弾く。"""
+    from rageval.generate import detect_fragment_rationale
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー等の容器又は管の溶接部の耐圧試験は、第5条の規定を準用する"},
+        {"doc_id": "d2", "text": "第１０７条, 第１項"},
+    ])
+    found = detect_fragment_rationale(qa)
+    assert len(found) == 1
+    assert found[0][0] == 1
+
+
+def test_detect_fragment_rationale_passes_real_sentence():
+    """まともな本文の rationale は弾かない。"""
+    from rageval.generate import detect_fragment_rationale
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー等の容器又は管の溶接部の耐圧試験は、第5条の規定を準用する"},
+        {"doc_id": "d2", "text": "技術基準の解釈において、第107条第1項に規定する試験に適合した技能を有する溶接士"},
+    ])
+    found = detect_fragment_rationale(qa)
+    assert found == []
+
+
+def test_detect_fragment_rationale_flags_short_text():
+    """極端に短い rationale も実体不足とみなす。"""
+    from rageval.generate import detect_fragment_rationale
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー等の容器又は管の溶接部の耐圧試験は、第5条の規定を準用する"},
+        {"doc_id": "d2", "text": "（ロ）第１０７条"},
+    ])
+    found = detect_fragment_rationale(qa)
+    assert len(found) == 1
+
+
+# ---------- v2.0 短すぎる rationale の機械検出 ----------
+
+def test_detect_short_rationale_flags_under_30_chars():
+    from rageval.generate import detect_short_rationale
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー等の容器又は管の溶接部の耐圧試験は、第5条の規定を準用する"},
+        {"doc_id": "d2", "text": "第１０７条第１項"},  # 8 文字
+    ])
+    bad = detect_short_rationale(qa, min_chars=30)
+    assert len(bad) == 1
+    assert bad[0][0] == 1
+
+
+def test_detect_short_rationale_passes_long_text():
+    from rageval.generate import detect_short_rationale
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー等の容器又は管の溶接部の耐圧試験は、第5条の規定を準用する"},
+        {"doc_id": "d2", "text": "技術基準解釈第107条第1項に規定する試験を実施し、当該試験に合格すること"},
+    ])
+    assert detect_short_rationale(qa, min_chars=30) == []
+
+
+# ---------- v2.0 answer 固有値の逐語裏取り ----------
+
+def test_detect_ungrounded_answer_tokens_flags_missing_form_number():
+    """answer に「様式第6号」と書いてあるのに rationale にその文字列が無いケース。"""
+    from rageval.generate import detect_ungrounded_answer_tokens
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー附属設備の検査結果は様式に記録する"},
+        {"doc_id": "d2", "text": "様式第7号（第60条関係）"},  # 第6号 ではなく第7号
+    ])
+    qa.answer = "様式第6号を使用します"
+    missing = detect_ungrounded_answer_tokens(qa)
+    assert "様式第6号" in missing
+
+
+def test_detect_ungrounded_answer_tokens_passes_when_grounded():
+    """answer の固有値が rationale に逐語存在する場合は OK。"""
+    from rageval.generate import detect_ungrounded_answer_tokens
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "ボイラー附属設備の検査結果は様式第6号に記録する。第60条関係。"},
+        {"doc_id": "d2", "text": "様式第6号（第60条関係）使用方法..."},
+    ])
+    qa.answer = "様式第6号を使用します"
+    assert detect_ungrounded_answer_tokens(qa) == []
+
+
+def test_detect_ungrounded_answer_tokens_handles_fullwidth_digits():
+    """全角数字でも半角に正規化して照合する。"""
+    from rageval.generate import detect_ungrounded_answer_tokens
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "第１０７条第１項に規定する試験"},  # 全角
+        {"doc_id": "d2", "text": "技術基準解釈において定める"},
+    ])
+    qa.answer = "第107条第1項の試験を実施"  # 半角
+    assert detect_ungrounded_answer_tokens(qa) == []
+
+
+def test_detect_ungrounded_answer_tokens_no_tokens_in_answer():
+    """answer に固有値が無いケースは pass。"""
+    from rageval.generate import detect_ungrounded_answer_tokens
+    qa = _make_test_qa([
+        {"doc_id": "d1", "text": "適切な手順を守ってください"},
+        {"doc_id": "d2", "text": "適切な記録を残してください"},
+    ])
+    qa.answer = "適切な手順を守ってください"
+    assert detect_ungrounded_answer_tokens(qa) == []
 
 
 def test_render_prompt_injects_aspect_examples():

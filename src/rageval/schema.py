@@ -24,8 +24,16 @@ RAGAnswerMatch = Literal["match", "partial", "no_match"]
 
 class Rationale(BaseModel):
     doc_id: str
+    # 根拠チャンクの所在。一文書コーパス (例: モデル就業規則) では本丸判定の
+    # leave-one-out 単位が「文書」だと 1 単位に潰れるため、チャンク単位で判定
+    # できるようにここに持つ。None なら従来どおり doc_id が判定単位になる。
+    chunk_id: Optional[str] = None
     page: Optional[int] = None
     text: str
+
+    def evidence_unit(self) -> str:
+        """leave-one-out の判定単位: チャンク ID があればチャンク、無ければ文書。"""
+        return self.chunk_id or self.doc_id
 
 
 # ===== 階層② 診断軸（富士通4軸, bool多重タグ） =====
@@ -112,6 +120,39 @@ class RAGVerification(BaseModel):
     verified_at: datetime
 
 
+# ===== KG エッジ (sampling.ReferenceFollow の照合済み事実を保存) =====
+# Gemma に書かせるのではなく、sampling 段階で確定する (anchor_chunk_id, ref_token, target_chunk_id) を記録する。
+# これにより:
+#  - 質問単位で「KG が辿るべきエッジ列」が機械可読化される (M4 構造トレース採点の素)
+#  - predicate (= ref_token) を 6 種の関係カテゴリに後付けマッピングできる
+#  - 「KG パス由来の正答」と「リランカ偶然合成」を切り分けられる
+
+class RelationEdge(BaseModel):
+    subject_chunk_id: str    # anchor 側のチャンク
+    predicate: str           # 述語 = anchor.references に登場した参照語 (「別表第7」「第107条」「JIS B 8267」等)
+    object_chunk_id: str     # target 側のチャンク (述語を本文 or section_path に含む)
+
+
+# ===== AnswerGrounding =====
+# 「rationale[i] を伏せたら answer が決まらなくなるか」を doc 単位で判定する。
+# Azure gpt-4.1 judge が doc ごとに「この doc を取り除いたとき answer の固有値が
+# 残りの rationale だけから再現できるか」を yes/no で返し、yes ならその doc は
+# answer に対して不要 (= sufficient_without)。
+# 本丸の条件は「全 doc が伏せられたとき answer が決まらない」= 全 doc で per_doc_sufficient=False。
+# 1 doc でも True (= その doc 単独で answer が出る) なら片 doc 完結問いと判定する。
+#
+# v3 で判明: rationale が 2 doc 並んでも 17/23 件は片 doc 完結だったため、これを
+# 機械的に検出するための後付け判定スキーマとして導入する。
+
+class AnswerGrounding(BaseModel):
+    # doc_id -> その doc を伏せても answer が決まるか (True = この doc は要らない)
+    per_doc_sufficient: dict[str, bool]
+    judge_model: str
+    # judge LLM が返した生 JSON (debug 用)
+    judge_raw: Optional[str] = None
+    verified_at: datetime
+
+
 # ===== QA本体 =====
 
 class QAItem(BaseModel):
@@ -146,6 +187,8 @@ class QAItem(BaseModel):
     kg_novelty: Optional[KGNovelty] = None
     llm_knowledge: Optional[LLMKnowledge] = None   # `rageval probe` で後付け
     rag_verification: Optional[RAGVerification] = None  # `rageval rag-verify` で後付け
+    relation_edges: list[RelationEdge] = Field(default_factory=list)  # sampling/enrich で注入
+    answer_grounding: Optional[AnswerGrounding] = None  # leave-one-out 判定で後付け or 生成時必須
 
     generation: GenerationInfo
     filter_scores: FilterScores = Field(default_factory=FilterScores)

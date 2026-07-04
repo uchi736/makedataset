@@ -316,13 +316,35 @@ def generate_batch(
                 # コーパスがこの観点の組成 (複数チャンク/複数文書) を作れない → skip
                 print(f"[generate] skip ({sampler_key}): コーパスが必要なチャンク組成を作れず")
                 continue
+            # 異 doc 跨ぎが本質である戦略 (multi_doc_reference / multi_source_integration /
+            # multi_hop) で sampler が単一 doc に縮退した場合は早期 skip。
+            # こうしないと「multi-doc の問いを作れ」と LLM に頼んでも、anchor が1 doc
+            # しか無いので物理的に成立せず、偽 traceability が量産される。
+            _MULTI_DOC_REQUIRED = {
+                "multi_doc_reference", "multi_source_integration", "multi_hop",
+                "reference_follow",  # kg_poc の unknown_relation/procedural_relation 系
+            }
+            if sampler_key in _MULTI_DOC_REQUIRED:
+                anchor_docs = {c.doc_id for c in anchors}
+                if len(anchor_docs) < 2:
+                    print(
+                        f"[generate] skip ({sampler_key}): anchor が単一 doc に縮退 "
+                        f"(docs={sorted(anchor_docs)}) — 異 doc 跨ぎが作れず"
+                    )
+                    continue
             few_shot = _sample_seeds(seeds_path, rng, k=3)
             prompt = render_fn(body, anchors, spec, few_shot)
             try:
-                # max_tokens は llm.generate 既定 (8192) に任せる。
-                # force_json=True で JSON mode 有効化 → 文字列途中切断やfence外
+                # max_tokens は 4096 に明示。
+                # Gemma 4 26B-A4B (ctx=16384) に対し prompt 入力が ~8000 token 近くに
+                # 達することがあり、既定 8192 だと合計 16384 を超えて 400 で落ちる事例があった。
+                # QA 1問の JSON 出力は実測で 1500-2500 token なので 4096 で十分マージンあり。
+                # force_json=True で JSON mode 有効化 → 文字列途中切断や fence 外
                 # コメント等の "もっともらしいが壊れたJSON" を抑制
-                raw = caller(prompt=prompt, model=model, response_model=None, force_json=True)
+                raw = caller(
+                    prompt=prompt, model=model, response_model=None,
+                    force_json=True, max_tokens=4096,
+                )
                 data = _coerce_to_dict(raw)
                 # Stable qa_id: track-specific key
                 spec_key = spec.get("aspect") or spec.get("kg_query_type", "?")
@@ -361,6 +383,88 @@ def generate_batch(
                 print(f"[generate] skip {qa.qa_id} (fabricated terms): {fabricated}")
                 continue
 
+            # Post-gen sanity check: 多 doc アンカーを渡したのに rationale が 1 doc しか
+            # 持たないと、traceability/multi_hop の本質である異 doc 横断が成立しない。
+            # sampling 側は 2 doc 渡すよう指定済みなのに Gemma が 1 doc に縮める事例があった
+            # (v1.7 smoke では traceability 18件中 全件が rationale 単一 doc に縮退)。
+            mismatch = detect_single_doc_rationale_with_multi_anchor(qa, anchors)
+            if mismatch:
+                anchor_docs, rat_docs = mismatch
+                print(
+                    f"[generate] skip {qa.qa_id} (rationale 単一doc): "
+                    f"anchors={sorted(anchor_docs)} rationale={sorted(rat_docs)}"
+                )
+                continue
+
+            # Post-gen sanity check: 場所当て (条文の所在だけ尋ねる) は KG-RAG 評価に
+            # 値しない。「どの条文」「第何条」等の場所探索表現を検出して落とす。
+            place_findings = detect_place_finding_question(qa.question)
+            if place_findings:
+                print(
+                    f"[generate] skip {qa.qa_id} (場所当て): "
+                    f"phrases={place_findings} :: {qa.question[:80]}"
+                )
+                continue
+
+            # Post-gen sanity check: 質問文に条文番号が 3 個以上列挙されているのは
+            # 「実務者が聞かない」型 (答えのヒントを質問側に書き込んでいる)。
+            article_count = detect_article_enumeration(qa.question)
+            if article_count >= 3:
+                print(
+                    f"[generate] skip {qa.qa_id} (条文番号列挙 {article_count}個): "
+                    f"{qa.question[:90]}"
+                )
+                continue
+
+            # Post-gen sanity check: 「Xの経験者がYに従事する場合」のような
+            # 経歴ピボット (無関係チャンク2題を架空経歴で強引に接続) を検出。
+            pivot = detect_career_pivot(qa.question)
+            if pivot:
+                print(
+                    f"[generate] skip {qa.qa_id} (経歴ピボット): "
+                    f"phrases={pivot} :: {qa.question[:90]}"
+                )
+                continue
+
+            # Post-gen sanity check: 「第N条に関連する事項を確認したい。第N条に
+            # 関連する様式は」のような既知前提引用 (場所当ての変種) を検出。
+            premise = detect_known_premise_quote(qa.question)
+            if premise:
+                print(
+                    f"[generate] skip {qa.qa_id} (既知前提引用): "
+                    f"phrases={premise} :: {qa.question[:90]}"
+                )
+                continue
+
+            # Post-gen sanity check: rationale.text が条文番号断片だけのものを
+            # 含む場合、多 doc 跨ぎを偽装した実質単 doc 問題なので skip。
+            fragments = detect_fragment_rationale(qa)
+            if fragments:
+                snippets = " | ".join(f"#{i}:{t[:20]}" for i, t in fragments)
+                print(
+                    f"[generate] skip {qa.qa_id} (断片rationale): {snippets}"
+                )
+                continue
+
+            # v2.0 追加: rationale.text の文字数が下限 30 未満は水増し疑い。
+            short = detect_short_rationale(qa, min_chars=30)
+            if short:
+                snippets = " | ".join(f"#{i}({n}字):{t[:20]}" for i, n, t in short)
+                print(
+                    f"[generate] skip {qa.qa_id} (rationale 字数不足): {snippets}"
+                )
+                continue
+
+            # v2.0 追加: answer 中の固有値 (様式番号/条文/数値+単位 等) が
+            # rationale.text に 1 件も逐語存在しないなら、捏造 or 裏取り不足。
+            ungrounded = detect_ungrounded_answer_tokens(qa)
+            if ungrounded:
+                print(
+                    f"[generate] skip {qa.qa_id} (固有値 裏取り無し): "
+                    f"tokens={ungrounded}"
+                )
+                continue
+
             f.write(qa.model_dump_json() + "\n")
             written += 1
             if len(anchors) > 1:
@@ -382,6 +486,222 @@ def generate_batch(
 
 # 4+ chars of katakana / extended phrases — LLM 造語の典型形式
 _KATAKANA_PHRASE_RE = re.compile(r"[ァ-ヴー・]{4,}")
+
+
+# v2.0 追加: answer 中の固有値を抽出する正規表現群。
+# answer に登場する「答えそのもの」になる文字列で、これらは必ずいずれかの
+# rationale.text に逐語で出てこなければならない (= 固有値の逐語裏取り)。
+_ANSWER_TOKEN_PATTERNS = [
+    r"様式第[０-９0-9一二三四五六七八九十百千]+号?",
+    r"別表第[０-９0-9一二三四五六七八九十百千]+",
+    r"附属書[A-ZＡ-Ｚ]",
+    r"JIS\s*[A-Z]\s*\d{3,5}(?:[-－]\d+)?",
+    r"ISO\s*\d{3,5}",
+    r"ASME\s*[A-Z]+(?:\.\d+)?",
+    r"\d+(?:\.\d+)?\s*(?:MPa|kPa|mm|cm|m|kg|t|℃|倍|時間|分|秒|日|年|kW|MW|A|V|Hz)",
+    r"第[０-９0-9一二三四五六七八九十百千]+条(?:第[０-９0-9]+項)?(?:第[０-９0-9]+号)?",
+]
+_ANSWER_TOKEN_RE = re.compile("|".join(_ANSWER_TOKEN_PATTERNS))
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_for_match(s: str) -> str:
+    """空白を除去し全角数字を半角に揃える (逐語照合の前処理)。"""
+    half = s.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    return _WS_RE.sub("", half)
+
+
+def detect_ungrounded_answer_tokens(qa: QAItem) -> list[str]:
+    """answer 中の固有値で、どの rationale.text にも逐語存在しないものを返す。
+
+    answer に「様式第6号」「20MPa」「第59条」のような具体値が出てくるのに、
+    その文字列が rationale.text のどれにも逐語で含まれないなら、その固有値は
+    LLM が捏造したか rationale の引用が不十分。skip 対象。
+    """
+    answer_norm_tokens = list(dict.fromkeys(_ANSWER_TOKEN_RE.findall(qa.answer)))
+    if not answer_norm_tokens:
+        return []
+    rationale_blob = _normalize_for_match("".join(r.text for r in qa.rationale))
+    missing: list[str] = []
+    for tok in answer_norm_tokens:
+        if _normalize_for_match(tok) not in rationale_blob:
+            missing.append(tok)
+    return missing
+
+
+def detect_short_rationale(qa: QAItem, min_chars: int = 30) -> list[tuple[int, int, str]]:
+    """rationale.text の文字数が下限未満のエントリを (index, len, text) で返す。
+
+    9字や 13字の条文番号断片で rationale 配列を水増しする型を機械的に弾く。
+    detect_fragment_rationale が正規表現で「番号だけ」を検出するのに対し、
+    こちらは内容問わず長さだけで切る。両方併用が安全。
+    """
+    bad: list[tuple[int, int, str]] = []
+    for i, r in enumerate(qa.rationale):
+        n = len(r.text.strip())
+        if n < min_chars:
+            bad.append((i, n, r.text))
+    return bad
+
+
+def detect_single_doc_rationale_with_multi_anchor(
+    qa: QAItem, anchors: list[Chunk],
+) -> Optional[tuple[set[str], set[str]]]:
+    """anchor が 2 doc 以上なのに rationale が 1 doc しか持たない場合、(anchor_docs, rationale_docs) を返す。
+    違反でなければ None。
+
+    traceability / multi_hop / multi_doc_reference 等の「異 doc 跨ぎ」を意図して
+    sampling が 2 doc 渡したのに、生成 LLM が「1 doc で書ける」と判断して片方を
+    捨てているケースを検出する。
+    """
+    anchor_doc_ids = {c.doc_id for c in anchors}
+    if len(anchor_doc_ids) < 2:
+        return None  # 元から単一 doc なら検査対象外
+    rationale_doc_ids = {r.doc_id for r in qa.rationale}
+    if len(rationale_doc_ids) >= 2:
+        return None  # rationale も 2 doc 以上なら OK
+    return anchor_doc_ids, rationale_doc_ids
+
+
+# v1.9 追加: 断片 rationale 検出。
+# 「第N条」「第N条第M項」のような条文番号断片だけを rationale.text に置き、
+# 実体は別 doc に閉じる cross-doc 偽装を弾く。
+_FRAGMENT_RATIONALE_RE = re.compile(
+    r"^\s*(?:第\d+(?:条|項|号)(?:[（(][^）)]{0,8}[）)])?[\s、,]*)+\s*$"
+)
+
+
+def detect_fragment_rationale(qa: QAItem) -> list[tuple[int, str]]:
+    """rationale.text が条文番号や箇条見出し断片だけの実体不足エントリを返す。
+
+    多 doc 跨ぎを偽装するために「第１０７条」「第１項」「（ロ）第１０７条第１項の試験」
+    といった番号断片を rationale に貼り付ける型を機械的に検出する。
+    返り値は (index, text) のリスト。空なら違反なし。
+    """
+    bad: list[tuple[int, str]] = []
+    for i, r in enumerate(qa.rationale):
+        text = r.text.strip()
+        if not text:
+            bad.append((i, text))
+            continue
+        # 全角数字を半角に正規化してマッチさせる
+        norm = text.translate(str.maketrans("０１２３456789", "0123456789"))
+        # 数字の半角化を完全にする
+        norm = norm.translate(
+            str.maketrans({"０":"0","１":"1","２":"2","３":"3","４":"4","５":"5","６":"6","７":"7","８":"8","９":"9"})
+        )
+        # 番号断片のみ
+        if _FRAGMENT_RATIONALE_RE.match(norm):
+            bad.append((i, text))
+            continue
+        # 極端に短い rationale (10文字未満) も実体不足とみなす
+        if len(text) < 10:
+            bad.append((i, text))
+    return bad
+
+
+# 場所当て (条文・章節の所在を問うだけ) の検出パターン。
+# 「どこに」+ 「定め/規定/書か」 や、「どの条文」「第何条」を主に拾う。
+# 「どの規定」「どの試験」「どの基準」は内容を問う文脈で正当に使われるので除外。
+_PLACE_FINDING_PATTERNS = [
+    r"どの条文",
+    r"どの条",
+    r"どこに定め",
+    r"どこに規定",
+    r"どこに書か",
+    r"第何条",
+    r"第何章",
+    r"第何節",
+    r"どの章に書",
+    r"どの章で",
+    r"何条で規定",
+    r"何条に定め",
+]
+_PLACE_FINDING_RE = re.compile("|".join(_PLACE_FINDING_PATTERNS))
+
+
+_ARTICLE_NUMBER_RE = re.compile(r"第\d+条")
+
+
+def detect_article_enumeration(question: str) -> int:
+    """質問文に含まれる条文番号 (「第N条」) の異なり数を返す。
+
+    実務者は答え合わせ用に条文番号を覚えていないので、質問文に複数の
+    条文番号が列挙されているのは「答えのヒントを質問側に書き込んだ」
+    試験文体の徴候。3 個以上で skip 対象。
+    """
+    matches = _ARTICLE_NUMBER_RE.findall(question)
+    return len(set(matches))
+
+
+# 経歴ピボット (無関係な経歴で 2 題を強引に接続) の検出。
+# 「Xの経験/従事者が Yに関わる/従事する/設計する場合」のような構文を捉える。
+_CAREER_PIVOT_PATTERNS = [
+    r"経験[ががのを]\S{0,8}従事",
+    r"経験[ががのを]\S{0,8}関わる",
+    r"経験[ががのを]\S{0,8}行う",
+    r"経験[ががのを]\S{0,8}設計",
+    r"従事[ ]?した?経験",
+    r"携わ\S{0,4}者が",
+    r"従事[ ]?する者が\S{0,8}関わ",
+    r"設計\S{0,4}従事[ ]?した?経験",
+]
+_CAREER_PIVOT_RE = re.compile("|".join(_CAREER_PIVOT_PATTERNS))
+
+
+# 既知前提引用: 質問者が「第N条が答えに関係する」と既に知っているように書く形。
+# 「第N条に関連する事項を確認したい。第N条に関連する様式は」のような
+# 同一条文の重複言及や、答えに使う先を質問側で指定する型を捉える。
+_KNOWN_PREMISE_PATTERNS = [
+    r"第\d+条に関連する事項",
+    r"第\d+条に関連する[^。]{0,12}様式",
+    r"第\d+条に関連する[^。]{0,12}記録",
+    r"第\d+条に基づき[^。]{0,20}様式",
+    r"第\d+条に基づく[^。]{0,12}様式",
+    r"第\d+条に紐づ[^。]{0,12}様式",
+    r"第\d+条に関する事項を確認",
+    r"第\d+条の規定に基づき[^。]{0,12}様式は",
+    # v1.9 追加 (audit で見つかった隠れ変種)
+    r"第\d+条第\d+項の規定に準じて",       # 「第59条第3項の規定に準じて補強」
+    r"第\d+条の規定に準じて",                # 「第14条の規定に準じて補強」
+    r"第\d+条に基づいて",                    # 「第6条第5項の規定に基づいて」
+    r"第\d+条第\d+項の規定に基づいて",
+    r"第\d+条になった際",                    # 「第N条になった際」
+    r"[（(]第\d+条[）)]",                    # 質問文中の括弧書き条文番号 (第77条) 系
+    r"[（(]第\d+条第\d+項[）)]",
+    r"第\d+条に関連して使用",                # 「第77条に関連して使用すべき様式」
+]
+_KNOWN_PREMISE_RE = re.compile("|".join(_KNOWN_PREMISE_PATTERNS))
+
+
+def detect_known_premise_quote(question: str) -> list[str]:
+    """質問文に「第N条が答えに関係する」と質問者が既に知っている前提のパターンを検出。
+
+    実務者は条文番号を覚えていない前提なので、「第N条に関連する〜を確認したい」型は
+    場所当ての変種 (= 既知前提引用) として弾く。
+    """
+    return list(dict.fromkeys(_KNOWN_PREMISE_RE.findall(question)))
+
+
+def detect_career_pivot(question: str) -> list[str]:
+    """質問文に「Xの経験者がYに関わる場合」型のピボット構文があれば返す。
+
+    sampling が無関係ドメインの 2 doc をペアにしたとき、Gemma が両 doc
+    を rationale に引くために「Xの経験者がYに従事する場合」のような
+    架空経歴で強引に接続する不良型を量産する。これを後段で機械的に弾く。
+    """
+    return list(dict.fromkeys(_CAREER_PIVOT_RE.findall(question)))
+
+
+def detect_place_finding_question(question: str) -> list[str]:
+    """質問文に「条文の所在だけを問う」表現が含まれるなら、その表現を返す。
+
+    「どの条文の規定に適合すればよいか」「第何条か」のような場所当ては、
+    KG-RAG の評価では内容理解を測れないので落としたい。
+    一方「どの試験」「どの基準」「どの規定 (内容)」のような中身を問う表現は
+    場所当てではないので、ここでは弾かない。
+    """
+    return list(dict.fromkeys(_PLACE_FINDING_RE.findall(question)))
 
 
 def detect_fabricated_terms(qa_text: str, anchor_chunks: list[Chunk]) -> list[str]:

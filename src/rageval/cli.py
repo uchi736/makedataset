@@ -227,6 +227,30 @@ def probe(
     )
 
 
+@app.command("answer-grounding")
+def answer_grounding_cmd(
+    in_path: Path = typer.Option(..., "--in", help="JSONL of QAs (must have rationale)"),
+    out_path: Optional[Path] = typer.Option(None, "--out", help="Output JSONL"),
+    judge_model: str = typer.Option(
+        lambda: os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1"),
+        help="Leave-one-out judge model",
+    ),
+    prompt: Path = typer.Option(Path("prompts/answer_grounding.md")),
+) -> None:
+    """各 rationale の doc を leave-one-out で伏せて、answer の固有値が決まるかを judge LLM で判定。
+
+    本丸 (KG-RAG の効きどころ) の必要条件「全 doc が answer に必要 (どの doc を伏せても
+    answer が決まらない)」を意味的に確認する。結果は qa.answer_grounding に永続化される。
+    """
+    from .answer_grounding import grounding_batch
+    grounding_batch(
+        in_path=in_path,
+        out_path=out_path,
+        judge_model=judge_model,
+        prompt_path=prompt,
+    )
+
+
 @app.command("rag-verify")
 def rag_verify_cmd(
     in_path: Path = typer.Option(..., "--in", help="JSONL of QAs to verify"),

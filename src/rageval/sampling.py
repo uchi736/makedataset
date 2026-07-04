@@ -48,6 +48,45 @@ def _has_any(text: str, markers: list[str]) -> bool:
     return any(m in text for m in markers)
 
 
+# v2.0 追加: チャンクが「リスト専用」(様式番号や別表番号を列挙しただけで
+# 規定本文を持たない目次的チャンク) かを判定する。
+# 09_kagi (条文本文) × 45_tokutei pos=45 (様式第1〜27 を丸ごと貼ったチャンク) の
+# ような非対称ペアで Gemma が片 doc 完結問いを書く原因を素材レベルで絶つ。
+_FORM_LIST_RE = re.compile(r"様式第[０-９0-9一二三四五六七八九十百千]+号?(?:[（(][^）)]{0,20}[）)])?")
+_APPENDIX_LIST_RE = re.compile(r"別表第[０-９0-9一二三四五六七八九十百千]+(?:[（(][^）)]{0,20}[）)])?")
+_ARTICLE_REF_RE = re.compile(r"第[０-９0-9]+条(?:第[０-９0-9]+項)?(?:第[０-９0-9]+号)?")
+
+
+def _is_list_chunk(c: Chunk, list_density_threshold: float = 0.6, min_items: int = 5) -> bool:
+    """様式 / 別表 を 5 件以上列挙し、それが本文の 60% 以上を占めるチャンクを True。
+
+    例: 45_tokutei_setsubi pos=45 は「様式第1〜第27」を丸ごと貼ったチャンクで、
+    list_density は 1.0 近く、min_items は 27 になる → True。
+    一方、本文に「様式第6号を参照」と書いている条文チャンクは、list_density は
+    0.1 未満なので False。
+    """
+    text = c.text
+    if not text:
+        return False
+    form_hits = _FORM_LIST_RE.findall(text)
+    app_hits = _APPENDIX_LIST_RE.findall(text)
+    total_items = len(form_hits) + len(app_hits)
+    if total_items < min_items:
+        return False
+    # 列挙の hit テキストが本文の何割を占めるか
+    hit_chars = sum(len(h) for h in form_hits) + sum(len(h) for h in app_hits)
+    density = hit_chars / len(text)
+    return density >= list_density_threshold
+
+
+def _refs_in_text(refs: set[str], text: str) -> bool:
+    """anchor の references (= 言及参照 token) が target チャンクの本文に
+    1 つでも逐語登場するなら True。"""
+    if not refs or not text:
+        return False
+    return any(ref in text for ref in refs)
+
+
 def _has_table(chunk: Chunk) -> bool:
     return _has_any(chunk.text, _TABLE_MARKERS)
 
@@ -231,6 +270,21 @@ class ReferenceFollow:
     n: int = 2
     # True なら特定性の高い参照 (条/別表/章) を優先し、無ければ全参照を使う
     prefer_specific: bool = False
+    # True なら異 doc の target だけを採用 (kg_poc の関係系セル用)。
+    # 2026-06-17: 同 doc 内で参照番号がマッチすると、見かけ上 2 chunk だが
+    # 実体は 1 doc の偽多 doc を量産していた。
+    force_distinct_doc: bool = False
+    # 本丸のチャンク単位化 (2026-07-01) に伴う追加: 同 doc の target でも
+    # 位置がこの値以上離れていれば採用する。一文書コーパス (モデル就業規則)
+    # では文書間参照が存在しないため、遠隔チャンク間の条文参照が本丸素材になる。
+    # None なら従来どおり (force_distinct_doc に従う)。
+    min_same_doc_gap: Optional[int] = None
+
+    def _same_doc_ok(self, anchor: Chunk, c: Chunk) -> bool:
+        """同一 doc の target を採用してよいか。"""
+        if self.min_same_doc_gap is not None:
+            return abs(c.position - anchor.position) >= self.min_same_doc_gap
+        return not self.force_distinct_doc
 
     def select(self, chunks, embeddings, rng) -> list[Chunk]:
         anchors_with_refs = [c for c in chunks if c.references]
@@ -252,6 +306,8 @@ class ReferenceFollow:
             for c in chunks:
                 if c.chunk_id == anchor.chunk_id:
                     continue
+                if c.doc_id == anchor.doc_id and not self._same_doc_ok(anchor, c):
+                    continue
                 blob = c.text + " " + " ".join(c.section_path)
                 if ref in blob:
                     targets.append(c)
@@ -261,7 +317,8 @@ class ReferenceFollow:
             seen.setdefault(c.chunk_id, c)
         ordered = list(seen.values())
         if not ordered:
-            # Reference is not resolvable in the corpus — fall back to anchor alone
+            # 異 doc target が見つからなければ anchor 単独で返す。
+            # 同 doc で水増しすると generate 側の early-skip が機能しなくなる。
             return [anchor]
         rng.shuffle(ordered)
         return [anchor] + ordered[: self.n - 1]
@@ -278,6 +335,15 @@ class MultiDocByEmbedding:
     # Raised from 0.3 to 0.5 after observing nonsense cross-domain pairs like
     # "時間外労働 × 標準トルク" caused by topic-mismatched corpus halves.
     sim_floor: float = 0.5
+    # v2.0 追加: anchor[0] と anchor[1] に共通する参照番号 (条文/様式/別表番号)
+    # が無いペアは「偶然の話題類似」なので reject する。
+    # cross-doc の意味的接続を担保するため、現コーパスで cross-doc を
+    # 名乗るには参照番号レベルの overlap を必須にする。
+    require_article_overlap: bool = False
+    # v2.0 追加: anchor[1] 候補が「リスト専用チャンク」(様式番号や別表番号を
+    # 列挙しただけで本文を持たない目次的チャンク) なら除外する。
+    # 09×45 の「条文本文 × 様式番号リスト」型デコイの素材を絶つため。
+    exclude_list_chunks: bool = False
 
     def select(self, chunks, embeddings, rng) -> list[Chunk]:
         if embeddings is None or len(chunks) < self.n:
@@ -292,27 +358,38 @@ class MultiDocByEmbedding:
         order = np.argsort(-sims)
         picked: list[Chunk] = [anchor]
         seen_docs = {anchor.doc_id}
+        anchor_refs = set(anchor.references or [])
         for i in order:
             if sims[i] < self.sim_floor:
                 break
             c = chunks[int(i)]
             if self.force_distinct_doc and c.doc_id in seen_docs:
                 continue
+            if self.exclude_list_chunks and _is_list_chunk(c):
+                continue
+            if self.require_article_overlap:
+                cand_refs = set(c.references or [])
+                if not (anchor_refs & cand_refs) and not _refs_in_text(anchor_refs, c.text):
+                    # 参照番号レベルの重なりが無い → 意味的接続が弱い → skip
+                    continue
             picked.append(c)
             seen_docs.add(c.doc_id)
             if len(picked) >= self.n:
                 break
-        if len(picked) == 1:
-            # No qualifying partner; fall back gracefully
-            if self.force_distinct_doc:
-                # Try without distinct-doc constraint
-                for i in order:
-                    if sims[i] < self.sim_floor:
-                        break
-                    c = chunks[int(i)]
-                    if c.chunk_id != anchor.chunk_id:
-                        picked.append(c)
-                        break
+        if len(picked) == 1 and not self.force_distinct_doc:
+            # 多 doc 制約が緩い戦略 (multi_source_integration / multi_hop) では、
+            # 同 doc の高類似チャンクで 2 個目を埋めて運用する (fallback)。
+            for i in order:
+                if sims[i] < self.sim_floor:
+                    break
+                c = chunks[int(i)]
+                if c.chunk_id != anchor.chunk_id:
+                    picked.append(c)
+                    break
+        # 注意: force_distinct_doc=True (multi_doc_reference 用) のときは、
+        # 異 doc の partner が見つからなければ picked=[anchor] のまま返す。
+        # 同 doc で水増しすると「2 chunk だが 1 doc」の偽多 doc を生み、
+        # generate 側の early-skip が機能しなくなる (2026-06-17 修正)。
         return picked
 
 
@@ -323,14 +400,34 @@ ASPECT_STRATEGIES: dict[str, Strategy] = {
     # force_distinct_doc=True needs a stricter floor: cross-doc pairs naturally
     # have lower similarity, but we'd rather emit a single-chunk fallback than
     # synthesize a nonsense cross-domain question.
-    "multi_doc_reference":      MultiDocByEmbedding(n=2, force_distinct_doc=True, sim_floor=0.55),
+    # 2026-06-17: プラント技報 + 法令の 158 文書間で sim_floor=0.55 だと
+    # ほぼ全試行が「異 doc ペア無し」で単一 doc にフォールバックし、
+    # traceability/multi_hop 系が偽の単一 doc 問いに化けていた。
+    # 0.40 まで下げると話題関連性は維持しつつ異 doc ペアが安定して見つかる。
+    # 2026-06-26: 0.40 は緩すぎて「防毒呼吸具 × 液化ガス容器」のような
+    # 無関係ドメインのペアを採り、Gemma が経歴ピボット (Xの経験者がYに従事…)
+    # で強引に接続する不良型を量産。0.50 に上げて関連性を担保。
+    # v2.0: require_article_overlap=True で「条文番号/様式番号一致が無い偶然
+    # ペア」を切る + exclude_list_chunks=True で「様式リスト専用チャンク」を素材
+    # から外す。これで様式番号デコイ・ペルソナ装飾の素材を絶つ。
+    "multi_doc_reference":      MultiDocByEmbedding(
+        n=2, force_distinct_doc=True, sim_floor=0.50,
+        require_article_overlap=True, exclude_list_chunks=True,
+    ),
     "remote_reference":         SameDocRemote(n=2, min_position_gap=3),
     "standards_reference":      ReferenceFollow(n=2),
-    "multi_hop":                MultiDocByEmbedding(n=2, force_distinct_doc=False, sim_floor=0.5),
+    "multi_hop":                MultiDocByEmbedding(
+        n=2, force_distinct_doc=False, sim_floor=0.5,
+        require_article_overlap=True, exclude_list_chunks=True,
+    ),
     # kg_poc の関係系セル用: 実在する参照 (第N条→本文/別表) で繋がった2チャンク。
     # 埋め込み類似ペアは「似ているが関係が無い」問いを量産して判定で落ちるため、
     # 関係を問う組では参照辿りを使う。
-    "reference_follow":         ReferenceFollow(n=2, prefer_specific=True),
+    # min_same_doc_gap=10: 本丸のチャンク単位化に伴い、同一文書内でも位置が
+    # 10 以上離れた遠隔参照ペアを許可 (一文書コーパスの条文参照が本丸素材になる)。
+    "reference_follow":         ReferenceFollow(
+        n=2, prefer_specific=True, force_distinct_doc=True, min_same_doc_gap=10,
+    ),
 }
 
 
