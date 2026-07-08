@@ -179,6 +179,47 @@ for ncr, equip, event, cause, art, corrective in INCIDENTS[:6]:
                        notes=f"因果: {ncr} 原因→第{art}条の要求"))
 
 # ============================================================
+# C-bulk. 大量不適合事例からの因果 QA (multi_hop × unknown_relation)
+#   事例チャンク(原因) + 条文チャンク(要求の具体値) の 2 単位。
+#   答えに条文固有の数値を含めることで条文チャンクを必須化する。
+# ============================================================
+
+_GT = json.loads((SYNTH_DIR / "_ground_truth_edges.json").read_text(encoding="utf-8"))
+_BULK_INC = [e for e in _GT["edges"] if e["type"] == "incident" and "part" in e]
+
+# NCR → 原因文/事象 を事例集チャンクから引くためのマップ (チャンク全文が rationale)
+def _incident_chunk(ncr, doc_id):
+    return rat(doc_id, f"{ncr}。")
+
+# form_ref 条だけ対象 (要求 action が条文チャンクに直接書いてある)
+_grouped: dict[int, list] = {}
+for e in _BULK_INC:
+    art = int(e["cause_article"].replace("第", "").replace("条", ""))
+    if art in ART_PARAMS:
+        _grouped.setdefault(art, []).append(e)
+
+_bulk_causal = []
+for art in sorted(_grouped):
+    for e in _grouped[art][:2]:  # 各条から最大2件
+        _bulk_causal.append(e)
+_bulk_causal = _bulk_causal[:30]
+
+for e in _bulk_causal:
+    art = int(e["cause_article"].replace("第", "").replace("条", ""))
+    prm = ART_PARAMS[art]
+    # 事例チャンク本文から cause を取り出す (チャンク全文を rationale にするので抽出は表示用)
+    inc_r = _incident_chunk(e["ncr"], e["doc_id"])
+    cause = inc_r["text"].split("原因: ")[1].split("(設備保全管理規程")[0]
+    q = (f"白波火力発電所で「{e['event']}」という不適合({e['ncr']})が発生しました。"
+         f"根本原因は何でしたか。また、この不適合に関連する保全規程の条文では、"
+         f"どのような実施方法・基準が要求されているか具体的に教えてください。")
+    ans = (f"根本原因は、{cause}です。"
+           f"関連する第{art}条では、{prm['subject']}について「{prm['action']}」ことが要求されています。")
+    r = [inc_r, rat(REG, f"第{art}条 {prm['subject']}は")]
+    QAS.append(qa_item(q, ans, r, qt="multi_hop", nov="unknown_relation",
+                       notes=f"因果(大量): {e['ncr']} 原因→第{art}条の要求"))
+
+# ============================================================
 # D. 手順 (procedural_relation)
 # ============================================================
 
