@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rageval ロジック詳解 — 図解ドキュメント</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --ink: #1b2733;
+    --ink-soft: #51606e;
+    --ink-faint: #8493a2;
+    --line: #dde3ea;
+    --line-strong: #c3ccd6;
+    --accent: #2f6df6;
+    --accent-soft: #e7effe;
+    --accent-ink: #1a4fca;
+    --green: #1f9d63;
+    --green-soft: #e2f4ea;
+    --amber: #d98a0b;
+    --amber-soft: #fbf0d9;
+    --red: #d94b4b;
+    --red-soft: #fbe4e4;
+    --violet: #7b53d1;
+    --violet-soft: #efe8fb;
+    --teal: #0f9aa8;
+    --teal-soft: #ddf3f5;
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif;
+    --shadow: 0 1px 2px rgba(20,30,45,.05), 0 4px 16px rgba(20,30,45,.06);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e141b;
+      --panel: #161e28;
+      --panel-2: #1c2733;
+      --ink: #e6edf4;
+      --ink-soft: #a8b6c4;
+      --ink-faint: #6d7d8c;
+      --line: #26323f;
+      --line-strong: #33424f;
+      --accent: #5c8dff;
+      --accent-soft: #17263f;
+      --accent-ink: #9dbcff;
+      --green: #3fbd81;
+      --green-soft: #12251b;
+      --amber: #e5a53a;
+      --amber-soft: #2a2211;
+      --red: #ec6a6a;
+      --red-soft: #2c1616;
+      --violet: #a486e6;
+      --violet-soft: #211a33;
+      --teal: #3cc3d0;
+      --teal-soft: #10262a;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e141b; --panel: #161e28; --panel-2: #1c2733; --ink: #e6edf4;
+    --ink-soft: #a8b6c4; --ink-faint: #6d7d8c; --line: #26323f; --line-strong: #33424f;
+    --accent: #5c8dff; --accent-soft: #17263f; --accent-ink: #9dbcff;
+    --green: #3fbd81; --green-soft: #12251b; --amber: #e5a53a; --amber-soft: #2a2211;
+    --red: #ec6a6a; --red-soft: #2c1616; --violet: #a486e6; --violet-soft: #211a33;
+    --teal: #3cc3d0; --teal-soft: #10262a; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --ink: #1b2733;
+    --ink-soft: #51606e; --ink-faint: #8493a2; --line: #dde3ea; --line-strong: #c3ccd6;
+    --accent: #2f6df6; --accent-soft: #e7effe; --accent-ink: #1a4fca;
+    --green: #1f9d63; --green-soft: #e2f4ea; --amber: #d98a0b; --amber-soft: #fbf0d9;
+    --red: #d94b4b; --red-soft: #fbe4e4; --violet: #7b53d1; --violet-soft: #efe8fb;
+    --teal: #0f9aa8; --teal-soft: #ddf3f5; --shadow: 0 1px 2px rgba(20,30,45,.05), 0 4px 16px rgba(20,30,45,.06);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.7;
+    -webkit-font-smoothing: antialiased; font-size: 16px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px 120px; }
+
+  /* ---- header ---- */
+  header.hero {
+    padding: 64px 20px 40px; text-align: center;
+    background:
+      radial-gradient(1200px 400px at 50% -180px, var(--accent-soft), transparent 70%);
+    border-bottom: 1px solid var(--line);
+  }
+  .hero-inner { max-width: 900px; margin: 0 auto; }
+  .eyebrow {
+    display: inline-block; font-family: var(--mono); font-size: 12.5px;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--accent-ink);
+    background: var(--accent-soft); padding: 5px 12px; border-radius: 100px;
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+  h1 { font-size: clamp(28px, 5vw, 44px); line-height: 1.15; margin: 18px 0 10px; letter-spacing: -.01em; }
+  .hero p { color: var(--ink-soft); font-size: 17px; max-width: 680px; margin: 0 auto; }
+  .hero-meta {
+    margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+    font-size: 13px; color: var(--ink-faint);
+  }
+  .hero-meta span {
+    background: var(--panel); border: 1px solid var(--line); padding: 6px 12px;
+    border-radius: 100px; font-family: var(--mono);
+  }
+
+  /* ---- toc ---- */
+  nav.toc {
+    position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px); border-bottom: 1px solid var(--line);
+    margin-bottom: 40px;
+  }
+  nav.toc ol {
+    max-width: 1080px; margin: 0 auto; padding: 11px 20px; list-style: none;
+    display: flex; gap: 6px; flex-wrap: wrap; font-size: 13.5px; counter-reset: toc;
+  }
+  nav.toc a {
+    color: var(--ink-soft); text-decoration: none; padding: 5px 11px; border-radius: 8px;
+    border: 1px solid transparent; white-space: nowrap; display: inline-block;
+  }
+  nav.toc a:hover { background: var(--panel); border-color: var(--line); color: var(--ink); }
+
+  /* ---- sections ---- */
+  section { margin: 0 0 56px; scroll-margin-top: 64px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin: 0 0 6px; }
+  .sec-num {
+    font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--accent);
+    background: var(--accent-soft); width: 34px; height: 34px; flex: none;
+    display: grid; place-items: center; border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  h2 { font-size: 25px; margin: 0; letter-spacing: -.01em; }
+  .sec-sub { color: var(--ink-soft); margin: 4px 0 24px 48px; font-size: 15.5px; }
+  @media (max-width: 640px){ .sec-sub { margin-left: 0; } }
+  h3 { font-size: 18px; margin: 34px 0 12px; letter-spacing: -.005em; }
+  h4 { font-size: 15px; margin: 22px 0 8px; color: var(--ink); }
+  p { margin: 12px 0; }
+  a { color: var(--accent-ink); }
+
+  code, .mono { font-family: var(--mono); font-size: .88em; }
+  p code, li code, td code {
+    background: var(--panel-2); padding: 1.5px 6px; border-radius: 6px;
+    border: 1px solid var(--line); font-size: .84em; color: var(--ink);
+    white-space: nowrap;
+  }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 22px 24px; box-shadow: var(--shadow); margin: 18px 0;
+  }
+  .lead {
+    font-size: 16.5px; color: var(--ink-soft); border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 16px; margin: 16px 0 24px;
+  }
+
+  /* ---- callouts ---- */
+  .note {
+    border-radius: 12px; padding: 14px 16px 14px 44px; position: relative;
+    margin: 16px 0; font-size: 14.5px; border: 1px solid var(--line);
+  }
+  .note::before {
+    position: absolute; left: 14px; top: 13px; font-size: 16px; line-height: 1;
+  }
+  .note.info { background: var(--accent-soft); border-color: color-mix(in srgb,var(--accent) 22%,transparent); }
+  .note.info::before { content: "ⓘ"; color: var(--accent); }
+  .note.warn { background: var(--amber-soft); border-color: color-mix(in srgb,var(--amber) 30%,transparent); }
+  .note.warn::before { content: "⚠"; color: var(--amber); }
+  .note.good { background: var(--green-soft); border-color: color-mix(in srgb,var(--green) 30%,transparent); }
+  .note.good::before { content: "✓"; color: var(--green); }
+
+  /* ---- flow diagram (vertical pipeline) ---- */
+  .pipe { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 8px 0; }
+  .pipe-node {
+    width: 100%; max-width: 640px; border-radius: 12px; padding: 14px 18px;
+    border: 1.5px solid var(--line-strong); background: var(--panel); box-shadow: var(--shadow);
+    position: relative;
+  }
+  .pipe-node .pn-top { display: flex; align-items: center; gap: 10px; }
+  .pipe-node .badge {
+    font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 3px 8px;
+    border-radius: 6px; flex: none;
+  }
+  .pipe-node .pn-title { font-weight: 700; font-size: 15.5px; }
+  .pipe-node .pn-desc { color: var(--ink-soft); font-size: 13.5px; margin-top: 5px; }
+  .pipe-node.store {
+    background: var(--panel-2); border-style: dashed; border-color: var(--line-strong);
+    max-width: 440px;
+  }
+  .pipe-node.store .pn-title { font-family: var(--mono); font-size: 13.5px; font-weight: 600; }
+  .b-accent { background: var(--accent-soft); color: var(--accent-ink); }
+  .b-green { background: var(--green-soft); color: var(--green); }
+  .b-violet { background: var(--violet-soft); color: var(--violet); }
+  .b-teal { background: var(--teal-soft); color: var(--teal); }
+  .b-amber { background: var(--amber-soft); color: var(--amber); }
+  .b-red { background: var(--red-soft); color: var(--red); }
+  .arrow-v { width: 2px; height: 22px; background: var(--line-strong); position: relative; }
+  .arrow-v::after {
+    content: ""; position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: var(--line-strong);
+  }
+  .arrow-v .lbl {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    white-space: nowrap; font-size: 12px; color: var(--ink-faint); font-family: var(--mono);
+  }
+
+  /* ---- two column compare ---- */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
+  @media (max-width: 720px){ .cols { grid-template-columns: 1fr; } }
+  .col-card { border-radius: 12px; border: 1px solid var(--line); padding: 18px 20px; background: var(--panel); box-shadow: var(--shadow); }
+  .col-card h4 { margin-top: 0; display: flex; align-items: center; gap: 8px; }
+  .tag {
+    font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 100px;
+  }
+  .col-card ul { margin: 10px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-soft); }
+  .col-card li { margin: 6px 0; }
+
+  /* ---- tables ---- */
+  .tbl-scroll { overflow-x: auto; margin: 16px 0; border-radius: 12px; border: 1px solid var(--line); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--panel); }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; color: var(--ink); position: sticky; top: 0; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  .cat-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-family: var(--mono); white-space: nowrap; }
+
+  /* ---- step boxes (horizontal) ---- */
+  .steps { display: flex; flex-direction: column; gap: 0; margin: 18px 0; }
+  .step { display: flex; gap: 16px; }
+  .step-rail { display: flex; flex-direction: column; align-items: center; flex: none; }
+  .step-dot {
+    width: 30px; height: 30px; border-radius: 50%; background: var(--accent);
+    color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 13px;
+    font-family: var(--mono); flex: none; box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+  .step-line { width: 2px; flex: 1; background: var(--line-strong); min-height: 12px; }
+  .step:last-child .step-line { display: none; }
+  .step-body { padding-bottom: 22px; }
+  .step-body h4 { margin: 3px 0 5px; }
+  .step-body p { margin: 0; font-size: 14px; color: var(--ink-soft); }
+  .step.reject .step-dot { background: var(--red); box-shadow: 0 0 0 4px var(--red-soft); }
+  .step.check .step-dot { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
+
+  /* ---- gauntlet grid ---- */
+  .gauntlet { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 10px; margin: 16px 0; }
+  .g-item {
+    border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; background: var(--panel);
+    border-left: 3px solid var(--red);
+  }
+  .g-item .g-fn { font-family: var(--mono); font-size: 12px; color: var(--red); font-weight: 600; }
+  .g-item .g-desc { font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; }
+
+  /* ---- decision tree ---- */
+  .tree { font-size: 14px; margin: 16px 0; }
+  .tree .branch {
+    border-left: 2px solid var(--line-strong); margin-left: 10px; padding-left: 18px; position: relative;
+  }
+  .tree .leaf { position: relative; padding: 7px 0; }
+  .tree .leaf::before {
+    content: ""; position: absolute; left: -18px; top: 18px; width: 14px; height: 2px; background: var(--line-strong);
+  }
+  .cond { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 2px 7px; border-radius: 6px; border: 1px solid var(--line); }
+  .result { font-weight: 700; padding: 2px 10px; border-radius: 6px; font-size: 13px; }
+
+  /* ---- schema layers ---- */
+  .layer {
+    border-radius: 12px; padding: 14px 18px; margin: 10px 0; border: 1px solid var(--line);
+    position: relative; overflow: hidden;
+  }
+  .layer::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; }
+  .layer.l1 { background: var(--accent-soft); } .layer.l1::before { background: var(--accent); }
+  .layer.l2 { background: var(--teal-soft); } .layer.l2::before { background: var(--teal); }
+  .layer.l3 { background: var(--amber-soft); } .layer.l3::before { background: var(--amber); }
+  .layer.l4 { background: var(--violet-soft); } .layer.l4::before { background: var(--violet); }
+  .layer.l5 { background: var(--panel-2); } .layer.l5::before { background: var(--ink-faint); }
+  .layer h4 { margin: 0 0 6px; font-size: 14px; }
+  .layer .fields { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); line-height: 1.9; }
+  .layer .fields b { color: var(--ink); font-weight: 600; }
+
+  .kbd { font-family: var(--mono); font-size: 12px; background: var(--panel-2); border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; }
+  hr.soft { border: none; border-top: 1px solid var(--line); margin: 40px 0; }
+  .footer { text-align: center; color: var(--ink-faint); font-size: 13px; margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--line); }
+
+  .theme-toggle {
+    position: fixed; right: 16px; bottom: 16px; z-index: 50; width: 44px; height: 44px;
+    border-radius: 50%; border: 1px solid var(--line-strong); background: var(--panel);
+    color: var(--ink); cursor: pointer; box-shadow: var(--shadow); font-size: 18px;
+  }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-soft); margin: 10px 0; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" aria-label="テーマ切替">◑</button>
+
+<header class="hero">
+  <div class="hero-inner">
+    <span class="eyebrow">rageval · logic deep-dive</span>
+    <h1>社内文書から RAG 評価データセットを<br>半自動生成するロジック 全解説</h1>
+    <p>チャンク化 → 生成 → 判定で絞り込み → 実走検証 → プロービング → 根拠検証 → レビュー。
+    各段が「LLM の自己満足を疑う」ように設計された多段パイプラインを、図で追う。</p>
+    <div class="hero-meta">
+      <span>Python 3.12 / Typer CLI</span>
+      <span>2 トラック</span>
+      <span>25 観点 + 15 セル</span>
+      <span>決定論 × LLM 判定の二重化</span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc">
+  <ol>
+    <li><a href="#overview">① 全体像</a></li>
+    <li><a href="#tracks">② 2トラック</a></li>
+    <li><a href="#chunk">③ チャンク化</a></li>
+    <li><a href="#sampling">④ アンカー選択</a></li>
+    <li><a href="#generate">⑤ 生成</a></li>
+    <li><a href="#gauntlet">⑥ 生成後検査</a></li>
+    <li><a href="#filter">⑦ 判定フィルタ</a></li>
+    <li><a href="#ragverify">⑧ RAG実走検証</a></li>
+    <li><a href="#probe">⑨ プロービング</a></li>
+    <li><a href="#grounding">⑩ 根拠検証</a></li>
+    <li><a href="#band">⑪ 区分分類</a></li>
+    <li><a href="#schema">⑫ スキーマ</a></li>
+    <li><a href="#llm">⑬ LLMルーティング</a></li>
+  </ol>
+</nav>
+
+<div class="wrap">
+
+<!-- ============ 1. OVERVIEW ============ -->
+<section id="overview">
+  <div class="sec-head"><div class="sec-num">01</div><h2>全体像 — 7段パイプライン</h2></div>
+  <p class="sec-sub">元文書を入れると QA データセットが出てくる。各段は同名ファイルに上書き出力し、途中から再開できる。中核思想は <b>「生成 LLM と判定 LLM の自己ループを、決定論チェックと実走検証で外から殴る」</b>。</p>
+
+  <div class="card">
+    <div class="pipe">
+      <div class="pipe-node store"><div class="pn-top"><span class="pn-title">data/docs/ &nbsp;— 元文書 (.txt / .md / .pdf)</span></div></div>
+      <div class="arrow-v"><span class="lbl">① chunk</span></div>
+      <div class="pipe-node"><div class="pn-top"><span class="badge b-teal">STAGE 1</span><span class="pn-title">chunk — 文書をチャンクに分割</span></div><div class="pn-desc">再帰分割 + 見出し追跡 + 参照識別子抽出。トラック非依存。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node store"><div class="pn-top"><span class="pn-title">data/chunks/ &nbsp;— 1 doc = 1 JSONL</span></div></div>
+      <div class="arrow-v"><span class="lbl">② generate</span></div>
+      <div class="pipe-node"><div class="pn-top"><span class="badge b-accent">STAGE 2</span><span class="pn-title">generate --track general | kg_poc</span></div><div class="pn-desc">観点抽選 → アンカー選択 → LLM 生成 → <b>9段の生成後検査</b>。ここでトラック分岐。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node store"><div class="pn-top"><span class="pn-title">data/raw/ &nbsp;— batch_YYYYMMDD_HHMM.jsonl</span></div></div>
+      <div class="arrow-v"><span class="lbl">③ filter</span></div>
+      <div class="pipe-node"><div class="pn-top"><span class="badge b-violet">STAGE 3</span><span class="pn-title">filter — 判定LLM 4観点 + 重複検知 + 逐語根拠照合</span></div><div class="pn-desc">answerability / grounding / leakage / difficulty_match をしきい値で絞る。共通。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node store"><div class="pn-top"><span class="pn-title">data/filtered/ &nbsp;— 合格 QA</span></div></div>
+      <div class="arrow-v"><span class="lbl">④ 任意の後付け段</span></div>
+      <div class="pipe-node" style="border-style:dashed">
+        <div class="pn-top"><span class="badge b-amber">OPTIONAL</span><span class="pn-title">rag-verify / probe / answer-grounding</span></div>
+        <div class="pn-desc"><b>rag-verify</b>: vector RAG が解けるかを実走。<b>probe</b>: 素の LLM が答えられるか (kg_poc)。<b>answer-grounding</b>: rationale の leave-one-out。いずれも QA に信号を後付けする。</div>
+      </div>
+      <div class="arrow-v"><span class="lbl">⑤ review</span></div>
+      <div class="pipe-node"><div class="pn-top"><span class="badge b-green">STAGE 4</span><span class="pn-title">review / review-kg — 人手 accept / edit / reject</span></div><div class="pn-desc">Streamlit UI。トラック別チェックリストを全部チェックで Accept 解放。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node store"><div class="pn-top"><span class="pn-title">data/reviewed/ &nbsp;— コミット対象</span></div></div>
+    </div>
+    <p style="margin-top:20px; font-size:13.5px; color:var(--ink-faint)"><code>stats</code> / <code>stats-kg</code> はどの段の JSONL でも可視化でき、<b>RAG検証タブ</b>で不一致(=KG候補)を目視できる。</p>
+  </div>
+
+  <div class="note info"><b>設計の核:</b> 生成 (Gemma系 vLLM) と判定 (Azure gpt-4.1系 / Claude) を<b>別モデルにして自己評価バイアスを断つ</b>。さらに逐語照合・トポロジ算出など<b>LLM を通さない決定論チェック</b>を随所に挟み、LLM が「もっともらしく嘘をつく」経路を機械的に塞ぐ。</p></div>
+</section>
+
+<!-- ============ 2. TRACKS ============ -->
+<section id="tracks">
+  <div class="sec-head"><div class="sec-num">02</div><h2>2つのトラック — 何を測りたいか</h2></div>
+  <p class="sec-sub">同じパイプラインから、目的の違う2種類の評価セットを作れる。分岐点は <code>generate</code> の <code>--track</code> だけ。診断4軸と難易度は両者共通で、違うのは「主タグ」。</p>
+
+  <div class="cols">
+    <div class="col-card" style="border-top:3px solid var(--accent)">
+      <h4><span class="tag b-accent">general</span> 総合能力測定 <span style="color:var(--ink-faint);font-weight:400;font-size:12px">(既定)</span></h4>
+      <p style="font-size:13.5px;color:var(--ink-soft);margin:8px 0">RAG が「広く」どんな質問形に弱いかを網羅測定する。</p>
+      <ul>
+        <li>分類軸: <b>25観点 × 5カテゴリ</b>の1階層</li>
+        <li>定義: <code>aspects.py</code></li>
+        <li>配分: ループ毎に25観点からランダム抽選</li>
+        <li>主タグ: <code>category[]</code> / <code>aspect[]</code></li>
+        <li>専用コマンド: <code>review</code> / <code>stats</code></li>
+      </ul>
+    </div>
+    <div class="col-card" style="border-top:3px solid var(--violet)">
+      <h4><span class="tag b-violet">kg_poc</span> KG-RAG 優位の実証</h4>
+      <p style="font-size:13.5px;color:var(--ink-soft);margin:8px 0">KG-RAG が単純ベクター検索より勝てる場面を計画的に並べる PoC 用。</p>
+      <ul>
+        <li>分類軸: <b>5クエリ型 × 3未知性 = 15セル</b> + プロービングで <code>known/unknown</code></li>
+        <li>定義: <code>tracks/kg_poc.py</code></li>
+        <li>配分: <code>--mix qt:nov=N</code> で明示 (未指定は15セル等分)</li>
+        <li>主タグ: <code>kg_query_type</code> / <code>kg_novelty</code> / <code>llm_knowledge</code></li>
+        <li>専用コマンド: <code>review-kg</code> / <code>stats-kg</code> / <code>probe</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note warn"><b>運用規約: 1ファイル1トラック。</b> 生成時の <code>--out</code> をトラック別に固定 (general→<code>data/raw_general/</code>, kg_poc→<code>data/raw_kg/</code>)。混在ファイルを作らなければ <code>--track</code> 切替に頼らずに済む。トラック判定は「<code>kg_query_type</code> か <code>kg_novelty</code> のどちらかが non-None なら kg_poc、両方 None なら general」という単純ルール (<code>review_app.py:357</code>)。</div>
+</section>
+
+<!-- ============ 3. CHUNK ============ -->
+<section id="chunk">
+  <div class="sec-head"><div class="sec-num">03</div><h2>チャンク化と参照識別子抽出</h2></div>
+  <p class="sec-sub"><code>chunker.py</code>。全形式で「参照識別子」を正規表現で拾って <code>references</code> に格納するのが後段の要。この参照が <code>ReferenceFollow</code> 戦略の材料になる。</p>
+
+  <div class="card">
+    <div class="pipe">
+      <div class="pipe-node store" style="max-width:520px"><div class="pn-top"><span class="pn-title">.txt / .md / .pdf を rglob で列挙</span></div></div>
+      <div class="arrow-v"><span class="lbl">拡張子で分岐</span></div>
+    </div>
+    <div class="cols" style="margin-top:0">
+      <div class="col-card">
+        <h4>📄 .txt</h4>
+        <p style="font-size:13px;color:var(--ink-soft);margin:6px 0">全体を1ブロックとして再帰分割。<code>page=None</code>。</p>
+      </div>
+      <div class="col-card">
+        <h4>📝 .md</h4>
+        <p style="font-size:13px;color:var(--ink-soft);margin:6px 0">見出し <code>#</code>〜<code>######</code> のスタックを辿り、各チャンクに <code>section_path</code> を付与してから分割。</p>
+      </div>
+    </div>
+    <div class="cols" style="margin-top:0">
+      <div class="col-card">
+        <h4>📕 .pdf — pypdf</h4>
+        <p style="font-size:13px;color:var(--ink-soft);margin:6px 0">ページ単位で抽出 → 再帰分割。<code>page</code> を保持。</p>
+      </div>
+      <div class="col-card">
+        <h4>📗 .pdf — Azure DI</h4>
+        <p style="font-size:13px;color:var(--ink-soft);margin:6px 0"><code>prebuilt-layout</code> の Markdown を経由し<b>ページ番号 + 見出しを両取り</b>。結果は <code>.pdf.di.md</code> にキャッシュし、PDFより新しければ再呼出ししない。</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>再帰分割アルゴリズム <code>_recursive_split</code></h3>
+  <p>優先度順の区切りパターンで、最大チャンクがサイズ内に収まる最初の粒度を選ぶ。既定 <code>chunk_size=800</code> / <code>chunk_overlap=100</code>。</p>
+  <div class="card" style="background:var(--panel-2)">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:var(--mono);font-size:13px">
+      <span class="kbd">段落 \n\n+</span> <span style="color:var(--ink-faint)">→</span>
+      <span class="kbd">文末 。．.!?</span> <span style="color:var(--ink-faint)">→</span>
+      <span class="kbd">改行 \n</span> <span style="color:var(--ink-faint)">→</span>
+      <span class="kbd">空白 \s+</span> <span style="color:var(--ink-faint)">→</span>
+      <span class="kbd">1文字ずつ</span>
+    </div>
+    <p style="margin:12px 0 0;font-size:13px;color:var(--ink-soft)">分割後は <code>_merge</code> でサイズ上限まで詰め、境界で <code>overlap</code> 文字だけ前チャンク末尾を引き継ぐ。</p>
+  </div>
+
+  <h3>参照識別子の抽出 <code>extract_references</code></h3>
+  <p>本文 + section_path から、他の文書 / 章節 / 規格 / 帳票を指す識別子を正規表現で拾い、<b>出現順を保って重複排除</b>する。</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>種別</th><th class="mono">正規表現 (要約)</th><th>例</th></tr></thead>
+      <tbody>
+        <tr><td>規格番号</td><td class="mono">JIS [A-Z] 4桁 / ISO / IEC / ASME</td><td>JIS Z 2241, ISO 9001</td></tr>
+        <tr><td>章節条項</td><td class="mono">第N章 / 第N節 / 第N条 / 第N項</td><td>第3章, 第15条, 第2項</td></tr>
+        <tr><td>図表・附属</td><td class="mono">別表N / 附属書[A-Z]</td><td>別表2, 附属書A</td></tr>
+        <tr><td>項番号</td><td class="mono">N.N.N項</td><td>5.2.3項</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>discover-patterns — 追加発見 (任意・1回)</h3>
+  <p>組み込み正規表現で拾えない社内文書ID (<code>DS-MEC-104</code> 等) や独自記法を LLM に列挙させ、<code>data/chunks/_discovered_patterns.json</code> に保存 → 以降の <code>chunk</code> で自動適用。<b>3つのガードレール</b>で暴走を防ぐ:</p>
+  <div class="steps">
+    <div class="step check"><div class="step-rail"><div class="step-dot">1</div><div class="step-line"></div></div><div class="step-body"><h4>コンパイル検査</h4><p>Python <code>re</code> でコンパイルできない正規表現は捨てる。</p></div></div>
+    <div class="step check"><div class="step-rail"><div class="step-dot">2</div><div class="step-line"></div></div><div class="step-body"><h4>空マッチ排除</h4><p>サンプル内で1件もマッチしないパターンは捨てる (幻覚除去)。</p></div></div>
+    <div class="step check"><div class="step-rail"><div class="step-dot">3</div><div class="step-line"></div></div><div class="step-body"><h4>貪欲パターン排除</h4><p>サンプルの5%以上を覆う <code>\d+</code> のような貪欲パターンは捨てる (小サンプルでは検査免除)。</p></div></div>
+  </div>
+</section>
+
+<!-- ============ 4. SAMPLING ============ -->
+<section id="sampling">
+  <div class="sec-head"><div class="sec-num">04</div><h2>アンカーチャンク選択戦略</h2></div>
+  <p class="sec-sub"><code>sampling.py</code>。生成する QA の「問いの型」に合わせて 1〜3 個のチャンクを選ぶ。この段が QA の難易度と検索の性質を決める、パイプラインで最も繊細な部分。</p>
+
+  <h3>2段フィルタ: 適合述語 → 戦略</h3>
+  <p><code>AnchorSampler.select(aspect)</code> は、まず観点ごとの<b>適合述語</b>でチャンクプールを絞り、その上で観点別の<b>戦略</b>を回す。</p>
+  <div class="card">
+    <div class="pipe">
+      <div class="pipe-node" style="max-width:560px"><div class="pn-top"><span class="badge b-teal">STEP 1</span><span class="pn-title">適合述語でプールを絞る <code>ASPECT_COMPATIBILITY</code></span></div><div class="pn-desc">例: <code>simple_table</code> は表マーカー (<code>|---</code>/<code>&lt;table&gt;</code>) を含むチャンクだけ。<code>standards_reference</code> は JIS/ISO で始まる参照を持つチャンクだけ。適合0件なら警告して全プールへフォールバック (バッチ要約に <code>compat_misses</code> として出る)。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node" style="max-width:560px"><div class="pn-top"><span class="badge b-accent">STEP 2</span><span class="pn-title">戦略でトポロジを組む <code>ASPECT_STRATEGIES</code></span></div><div class="pn-desc">multi-chunk 観点は「複数チャンクの組成を作れるまで最大20回再抽選」。どうしても作れなければ <code>difficulty_misses</code> を立てて <code>None</code> を返し、生成側が skip。</div></div>
+    </div>
+  </div>
+
+  <h3>5つの戦略</h3>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>戦略</th><th>ねらい</th><th>適用観点</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">SingleChunk</td><td>1チャンクをランダム。単一観点20種のフォールバック</td><td>上記以外の20観点</td></tr>
+        <tr><td class="mono">SameDocRemote<br>(n=2, gap=3)</td><td>同一文書内で位置が3以上離れた遠隔ペア。可能なら別トップ見出しを優先</td><td class="mono">remote_reference</td></tr>
+        <tr><td class="mono">ReferenceFollow<br>(n=2)</td><td>参照番号 (第N条→本文/別表) を<b>逐語で辿って</b>繋がる2チャンク。「似てるが無関係」を避ける</td><td class="mono">standards_reference<br>reference_follow (kg)</td></tr>
+        <tr><td class="mono">MultiDocByEmbedding<br>(n=3, floor=0.5)</td><td>埋め込みコサイン類似で話題が近いチャンクを集める</td><td class="mono">multi_source_integration</td></tr>
+        <tr><td class="mono">MultiDocByEmbedding<br>(n=2, distinct_doc,<br>floor=0.55)</td><td>異文書強制 + <b>参照番号の重なり必須</b> + リスト専用チャンク除外</td><td class="mono">multi_doc_reference<br>multi_hop</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note warn"><b>偽の「多文書」を作らせない防御:</b> <code>force_distinct_doc=True</code> のとき異文書パートナーが見つからなければ、同文書で水増しせず <code>[anchor]</code> 単独で返す。こうしないと「2チャンクだが1文書」の偽多文書が生まれ、生成側の early-skip が機能しなくなる (2026-06-17 修正)。<code>require_article_overlap</code> で「偶然の話題類似ペア (例: 防毒呼吸具 × 液化ガス容器)」も切る。</div>
+
+  <h3>検索難易度の決定論的算出</h3>
+  <p><b>難易度は乱数で割り当てない。</b> <code>retrieval_level</code> は LLM を介さず、アンカーのトポロジ (文書数・位置差) だけで決まる。</p>
+  <div class="tree card">
+    <div class="leaf"><span class="cond">len(anchors) ≤ 1</span> → <span class="result b-green">Easy</span> <span style="color:var(--ink-faint)">単一チャンクで完結</span></div>
+    <div class="leaf"><span class="cond">doc数 ≥ 2</span> → <span class="result b-red">Hard</span> <span style="color:var(--ink-faint)">複数文書横断</span></div>
+    <div class="leaf"><span class="cond">同一文書内の最大位置差 ≥ 10</span> → <span class="result b-red">Hard</span> <span style="color:var(--ink-faint)">遠隔参照級</span></div>
+    <div class="leaf">それ以外 → <span class="result b-amber">Medium</span> <span style="color:var(--ink-faint)">同一文書・複数チャンク</span></div>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-soft)">同時に <code>compute_retrieval_difficulty</code> が診断bool群 (<code>multi_doc</code>, <code>multi_chunk</code>, <code>low_locality≥3</code>, <code>remote_reference≥10</code>, <code>chunk_size_large≥1200字</code>) を埋める。意味依存の軸 (<code>abstraction_discrepancy</code> / <code>vocabulary_mismatch</code>) は質問依存なので False のまま残す。</p>
+</section>
+
+<!-- ============ 5. GENERATE ============ -->
+<section id="generate">
+  <div class="sec-head"><div class="sec-num">05</div><h2>QA 生成ループ</h2></div>
+  <p class="sec-sub"><code>generate.py</code>。<code>--n</code> 回ループし、毎回「スペック決定 → アンカー選択 → early-skip → LLM 生成 → 検証 → 書き出し」を回す。</p>
+
+  <h3>1イテレーションの流れ</h3>
+  <div class="steps">
+    <div class="step"><div class="step-rail"><div class="step-dot">1</div><div class="step-line"></div></div><div class="step-body"><h4>スペック決定</h4><p><b>general</b>: 25観点から1つランダム抽選。<b>kg_poc</b>: 事前構築した「セルキュー」から (query_type, novelty) を取り出す。</p></div></div>
+    <div class="step"><div class="step-rail"><div class="step-dot">2</div><div class="step-line"></div></div><div class="step-body"><h4>アンカー選択 + early-skip</h4><p>§04 の戦略でチャンクを選ぶ。<code>None</code> なら skip。異文書跨ぎが本質の戦略 (<code>multi_doc_reference</code> / <code>multi_source_integration</code> / <code>multi_hop</code> / <code>reference_follow</code>) で<b>単一 doc に縮退したら早期 skip</b>。</p></div></div>
+    <div class="step"><div class="step-rail"><div class="step-dot">3</div><div class="step-line"></div></div><div class="step-body"><h4>プロンプト構築</h4><p>アンカーチャンク群 + 観点の説明/良い例/悪い例 + Gold Seed から3件の Few-shot を注入。</p></div></div>
+    <div class="step"><div class="step-rail"><div class="step-dot">4</div><div class="step-line"></div></div><div class="step-body"><h4>LLM 生成</h4><p><code>force_json=True</code> / <code>max_tokens=4096</code> で JSON mode。壊れた JSON や文字列途中切断を抑制。</p></div></div>
+    <div class="step"><div class="step-rail"><div class="step-dot">5</div><div class="step-line"></div></div><div class="step-body"><h4>強制上書き + 決定論確定</h4><p>kg_poc では LLM がスペックを下げてくる (<code>multi_hop</code> 指示に <code>single_fact</code> を返す) ので <code>kg_query_type</code>/<code>kg_novelty</code> を<b>生成後に再代入</b>。<code>retrieval_level</code>/<code>retrieval_difficulty</code> もアンカーから決定論的に確定。</p></div></div>
+    <div class="step check"><div class="step-rail"><div class="step-dot">6</div><div class="step-line"></div></div><div class="step-body"><h4>9段の生成後検査 (次節)</h4><p>1つでも引っかかれば skip。すべて通ったものだけ JSONL に追記。</p></div></div>
+  </div>
+
+  <h3>kg_poc のセルキュー構築 <code>_build_kg_cell_queue</code></h3>
+  <div class="cols">
+    <div class="col-card">
+      <h4><code>--mix</code> 指定あり</h4>
+      <p style="font-size:13px;color:var(--ink-soft)">各 (qt, nov, count) を count 個に展開してシャッフル。合計が <code>n</code> より多ければ切り詰め、少なければ mix 内セルから埋め足す。</p>
+      <p style="font-family:var(--mono);font-size:12px;background:var(--panel-2);padding:8px 10px;border-radius:8px;border:1px solid var(--line)">multi_hop:unknown_relation=10,<br>traceability:procedural_relation=8</p>
+    </div>
+    <div class="col-card">
+      <h4><code>--mix</code> 未指定</h4>
+      <p style="font-size:13px;color:var(--ink-soft)">全 15 セル (5 query_type × 3 novelty) に等分。<code>divmod(n, 15)</code> で基本数を配り、余りをランダムなセルに割り当ててからシャッフル。</p>
+    </div>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-soft)">KG スペックは <code>_kg_aspect_for_strategy</code> で既存のアンカー戦略キーに写像して再利用する: <code>single_fact</code>→SingleChunk、<code>multi_hop/traceability</code>→ReferenceFollow (実在参照で繋ぐ)、<code>aggregation</code>→MultiDocByEmbedding。関係を問う組で埋め込み類似ペアを使うと「似てるが関係が無い」問いが判定で大量死するため、<b>実在参照辿りを優先</b>する。</p>
+</section>
+
+<!-- ============ 6. GAUNTLET ============ -->
+<section id="gauntlet">
+  <div class="sec-head"><div class="sec-num">06</div><h2>9段の生成後検査ゲート</h2></div>
+  <p class="sec-sub">生成 LLM は「もっともらしいが評価に値しない QA」を量産する。判定 LLM に投げる前に、<b>LLM を使わない正規表現/照合ベースの機械検査</b>で不良型を落とす。1つでも引っかかれば skip。</p>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:var(--red)"></span> すべて「該当したら skip」する拒否検査</span>
+  </div>
+  <div class="gauntlet">
+    <div class="g-item"><div class="g-fn">detect_fabricated_terms</div><div class="g-desc">質問/回答にある4文字以上の片仮名語が、どのアンカーにも無ければ LLM の造語。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">…single_doc_rationale</div><div class="g-desc">アンカーが2 doc以上なのに rationale が1 docに縮退 = 異doc跨ぎが偽装。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">…place_finding_question</div><div class="g-desc">「どの条文」「第何条」等の場所当て。内容理解を測れないので破棄。</div></div>
+    <div class="g-item"><div class="g-fn">detect_article_enumeration</div><div class="g-desc">質問文に条文番号が3個以上 = 答えのヒントを質問側に書いた試験文体。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">detect_career_pivot</div><div class="g-desc">「Xの経験者がYに従事する場合」= 無関係2題を架空経歴で強引接続。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">…known_premise_quote</div><div class="g-desc">「第N条に関連する様式は」= 答えの所在を既知前提で引用。場所当ての変種。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">detect_fragment_rationale</div><div class="g-desc">rationale が条文番号断片だけ (「第107条第1項」) = cross-doc 偽装。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">detect_short_rationale</div><div class="g-desc">rationale.text が30字未満 = 番号断片で配列を水増し。破棄。</div></div>
+    <div class="g-item"><div class="g-fn">…ungrounded_answer_tokens</div><div class="g-desc">回答中の固有値 (様式第6号/20MPa/第59条) がどの rationale にも逐語で無い = 捏造/裏取り不足。破棄。</div></div>
+  </div>
+
+  <div class="note good"><b>なぜ機械検査か:</b> これらは判定 LLM でも見逃しやすい「不良の型」。正規表現で確実に落とせば、高価な判定 LLM 呼び出しを無駄にせず、判定の通過率も上がる (実測で通過率が数倍改善した既定値がコードにコメントされている)。逐語照合は<b>空白除去 + 全角数字→半角</b>の正規化を挟んで LLM の整形差を吸収する。</div>
+</section>
+
+<!-- ============ 7. FILTER ============ -->
+<section id="filter">
+  <div class="sec-head"><div class="sec-num">07</div><h2>判定フィルタ — 4観点 + 決定論 + 重複検知</h2></div>
+  <p class="sec-sub"><code>filter.py</code> + <code>prompts/judge.md</code>。生成とは<b>別の判定 LLM</b> (Azure gpt-4.1-mini など) で各観点を採点し、しきい値で絞る。判定 LLM を使う軸と使わない軸を明確に分ける。</p>
+
+  <div class="card">
+    <div class="pipe">
+      <div class="pipe-node store" style="max-width:400px"><div class="pn-top"><span class="pn-title">raw QA + アンカーチャンク</span></div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node" style="max-width:600px">
+        <div class="pn-top"><span class="badge b-violet">判定LLM</span><span class="pn-title">judge.md の4セクションを個別プロンプトで採点</span></div>
+        <div class="pn-desc"><code>[ANSWERABILITY]</code> 1-5 / <code>[GROUNDING]</code> 1-5 / <code>[LEAKAGE]</code> pass·fail / <code>[DIFFICULTY_MATCH]</code> で実態レベルを測り <code>answer_level</code> を上書き確定。<code>temperature=0.0</code>。</div>
+      </div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node" style="max-width:600px">
+        <div class="pn-top"><span class="badge b-teal">決定論</span><span class="pn-title">rationale_grounded + uniqueness</span></div>
+        <div class="pn-desc"><b>rationale_grounded</b>: rationale.text がアンカーに空白無視で逐語含まれる割合。<b>uniqueness</b>: 埋め込みコサインで他QAとの最大類似度 (1 − sim)。</div>
+      </div>
+      <div class="arrow-v"><span class="lbl">しきい値</span></div>
+      <div class="pipe-node" style="max-width:400px"><div class="pn-top"><span class="badge b-green">keep / drop</span><span class="pn-title">1つでも下回れば drop、理由をログ出力</span></div></div>
+    </div>
+  </div>
+
+  <h3>判定軸としきい値</h3>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>観点</th><th>種別</th><th>既定しきい値</th><th>誰が測るか</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">answerability</td><td>1〜5</td><td class="mono">≥ 4.0</td><td><span class="cat-pill b-violet">判定LLM</span></td></tr>
+        <tr><td class="mono">grounding</td><td>1〜5</td><td class="mono">≥ 4.0</td><td><span class="cat-pill b-violet">判定LLM</span></td></tr>
+        <tr><td class="mono">leakage</td><td>pass / fail</td><td class="mono">--skip-leakage で無効化可</td><td><span class="cat-pill b-violet">判定LLM</span></td></tr>
+        <tr><td class="mono">difficulty_match</td><td>aligned / too_easy / too_hard</td><td>棄却には使わずタグのみ (<code>--reject-too-easy</code> で too_easy 棄却)</td><td><span class="cat-pill b-violet">判定LLM</span></td></tr>
+        <tr><td class="mono">uniqueness</td><td>0〜1</td><td class="mono">cos &gt; 0.92 で重複扱い</td><td><span class="cat-pill b-teal">埋め込み</span></td></tr>
+        <tr><td class="mono">rationale_grounded</td><td>0〜1</td><td class="mono">≥ 0.5 (半数逐語必須)</td><td><span class="cat-pill b-green">決定論照合</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note info"><b>チャンク選択の工夫 <code>_find_chunk_texts</code>:</b> 同一 (doc_id, page) には複数チャンクがあり得る (PDFは1ページ最大6チャンク、.txtは page=None で文書全体が同一キー)。候補を全連結すると判定 LLM 入力が文書まるごとに膨張するため、<b>rationale を逐語で含むチャンクを1つだけ選ぶ</b>。含むものが無ければ先頭候補 (→逐語照合は0になり正しく落ちる)。</div>
+
+  <div class="note warn"><b>再フィルタ用フラグの安全装置:</b> <code>--require-rag-fail</code> (no_match だけ残す) と <code>--require-rag-hit</code> (match だけ残す) は相反するので同時指定は <b>ValueError で早期棄却</b>。また <code>rag_verification</code> 未付与のファイルにこれらを当てると全件 drop するので、1件も rag-verify 済みが無ければ<b>警告して条件を無視</b>、まだら状態なら未付与件数を警告で明示する。</div>
+</section>
+
+<!-- ============ 8. RAG-VERIFY ============ -->
+<section id="ragverify">
+  <div class="sec-head"><div class="sec-num">08</div><h2>RAG 実走検証 — 自己ループの外の信号</h2></div>
+  <p class="sec-sub"><code>rag_verify.py</code>。「生成→判定」の LLM 自己ループから外れた信号を1本入れる段。この QA が素の vector RAG で解けてしまうのかを実際に走らせて確かめ、結果を <code>qa.rag_verification</code> に埋める。</p>
+
+  <div class="card">
+    <div class="steps">
+      <div class="step"><div class="step-rail"><div class="step-dot">1</div><div class="step-line"></div></div><div class="step-body"><h4>検索</h4><p>質問を Ruri (<code>VLLM_EMBEDDING_MODEL</code>) で埋め込み、チャンク埋め込みとのコサインで top-k を取得。<b>同点時は元順序を保つ安定ソート</b> (量子化で run ごとに結果が揺れるのを防ぐ)。ゼロベクトルは例外に倒す。</p></div></div>
+      <div class="step"><div class="step-rail"><div class="step-dot">2</div><div class="step-line"></div></div><div class="step-body"><h4>RAG 回答</h4><p>上位 k チャンク<b>だけ</b>を根拠に、本番想定モデル (<code>--rag-model</code>) が回答。</p></div></div>
+      <div class="step"><div class="step-rail"><div class="step-dot">3</div><div class="step-line"></div></div><div class="step-body"><h4>無回答正規化 <code>_is_unable_answer</code></h4><p>「回答不能」「不明」「該当なし」「文書からは特定できません」等の言い回しを無回答扱いに揃え、判定 LLM を呼ばない (揺れを match/partial と誤判定させない)。</p></div></div>
+      <div class="step"><div class="step-rail"><div class="step-dot">4</div><div class="step-line"></div></div><div class="step-body"><h4>照合</h4><p>判定 LLM が ground truth と候補回答を照合し <code>match</code> / <code>partial</code> / <code>no_match</code> を返す。想定外 verdict (例 <code>matched</code>) は警告し no_match のまま、生の値を <code>judge_raw</code> に保存。</p></div></div>
+      <div class="step check"><div class="step-rail"><div class="step-dot">5</div><div class="step-line"></div></div><div class="step-body"><h4>検索命中を2粒度で記録</h4><p>下記参照。1問ずつ追記書き出しなので、Ctrl-C / API 全断で途中で死んでも処理済み分は残る。</p></div></div>
+    </div>
+  </div>
+
+  <h3>検索命中の2粒度 — 過大評価を避ける</h3>
+  <div class="cols">
+    <div class="col-card" style="border-left:3px solid var(--amber)">
+      <h4><code>retrieval_hit_doc</code></h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)">根拠と<b>同じ doc_id</b> のチャンクが上位 k に1個でも居れば真。1文書が50チャンクを超える技報では、根拠と無関係な章が入っただけで真になり<b>過大評価</b>。</p>
+    </div>
+    <div class="col-card" style="border-left:3px solid var(--green)">
+      <h4><code>retrieval_hit_chunk</code> <span class="tag b-green">本命</span></h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)">根拠本文 (rationale.text) を<b>逐語で含む</b>チャンクが上位 k に居れば真。filter と同じ空白正規化。<b>検索健全性を見る本命指標</b>。</p>
+    </div>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-soft)">旧 <code>retrieval_hit</code> フィールドは <code>doc OR chunk</code> を入れて既存 JSONL と後方互換を保つ。</p>
+
+  <div class="note good"><b>この結果の使い道:</b> kg_poc では「vector RAG で解けない問い (= KG-RAG が活きる主戦場)」を <code>--require-rag-fail</code> で抜き出せる。general では難易度タグの妥当性チェックに使える。<code>stats</code> の「RAG検証」タブでは <b>判定LLMが答えあり + 不一致</b> の QA を「KG候補リスト」として列挙し、目視で当たりを付けられる。</div>
+</section>
+
+<!-- ============ 9. PROBE ============ -->
+<section id="probe">
+  <div class="sec-head"><div class="sec-num">09</div><h2>プロービング — AXIS-3 を埋める (kg_poc)</h2></div>
+  <p class="sec-sub"><code>probe.py</code>。filter 通過後の QA に、素の LLM が RAG 無しで答えられるか (<code>llm_knowledge = known | unknown</code>) を後付けする。これをやらないと「KG-RAG の主戦場 = unknown」セルに何問あるかが分からない。</p>
+
+  <div class="card">
+    <div class="pipe">
+      <div class="pipe-node" style="max-width:560px"><div class="pn-top"><span class="badge b-accent">STEP 1</span><span class="pn-title">質問だけを素の LLM に渡す (RAG無し / チャンク非提示)</span></div><div class="pn-desc">候補回答を得る。候補が空 or「不明」なら即 <code>unknown</code> (保守的挙動)。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node" style="max-width:560px"><div class="pn-top"><span class="badge b-violet">STEP 2</span><span class="pn-title">判定LLM に「候補回答 vs ground truth」を比較させる</span></div><div class="pn-desc"><code>match: known | unknown</code> を取得。判定が壊れたら <code>unknown</code> にフォールバック。</div></div>
+      <div class="arrow-v"></div>
+      <div class="pipe-node" style="max-width:400px"><div class="pn-top"><span class="badge b-green">SET</span><span class="pn-title">qa.llm_knowledge にセット</span></div></div>
+    </div>
+  </div>
+  <div class="note info"><b>known を除きたい理由:</b> known (RAG無しでも LLM が答えられる) 問いでは KG の貢献が見えにくい。unknown (RAG必須) こそ KG-RAG で改善余地がある主戦場。probe はこの2値を機械的に振り分ける自動化。</div>
+</section>
+
+<!-- ============ 10. GROUNDING ============ -->
+<section id="grounding">
+  <div class="sec-head"><div class="sec-num">10</div><h2>根拠検証 — leave-one-out</h2></div>
+  <p class="sec-sub"><code>answer_grounding.py</code>。「rationale[i] を伏せたら answer が決まらなくなるか」を根拠単位ごとに判定 LLM に問う。<b>本丸 (KG-RAG の効きどころ) の必要条件「全 doc が answer に必要」を意味的に確認</b>する。</p>
+
+  <div class="card">
+    <p style="margin-top:0"><b>根拠単位 (evidence unit)</b> = <code>rationale.chunk_id</code> があればチャンク、無ければ <code>doc_id</code>。一文書コーパス (モデル就業規則) では離れたチャンク2つを単位にできる。</p>
+    <div class="pipe">
+      <div class="pipe-node" style="max-width:600px"><div class="pn-top"><span class="badge b-violet">各単位について</span><span class="pn-title">この単位の rationale を伏せる → 残りだけで answer の固有値を再現できるか?</span></div>
+      <div class="pn-desc">判定 LLM が <code>sufficient: true/false</code> を返す。<b>true = その単位は不要</b> (伏せても answer が決まる)。判定が壊れたら保守的に false (= その doc は必要とみなす)。</div></div>
+      <div class="arrow-v"></div>
+      <div class="cols" style="margin:0">
+        <div class="col-card" style="border-left:3px solid var(--green)"><h4>全単位が false</h4><p style="font-size:13px;color:var(--ink-soft)">= どの単位を伏せても answer が決まらない = <b>全単位必須</b>。本丸の必要条件を満たす。</p></div>
+        <div class="col-card" style="border-left:3px solid var(--amber)"><h4>1単位でも true</h4><p style="font-size:13px;color:var(--ink-soft)">= その単位単独で answer が出る = <b>片 doc 完結</b>。体裁だけ multi-doc の「監査」行き。</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="note warn"><b>導入の経緯:</b> v3 で判明 — rationale が2 doc 並んでも 17/23 件は片 doc 完結だった。「2 doc rationale」という体裁だけでは本丸判定にならないため、この leave-one-out を後付け判定として導入。永続化フィールドは歴史的名称 <code>per_doc_sufficient</code> を保つが、キーは evidence unit。</div>
+</section>
+
+<!-- ============ 11. BAND ============ -->
+<section id="band">
+  <div class="sec-head"><div class="sec-num">11</div><h2>区分分類 — 派生ラベル band()</h2></div>
+  <p class="sec-sub"><code>tracks/kg_poc.py</code> の <code>band(qa)</code>。QAItem に列を足さず、集計時に <code>kg_query_type</code> / <code>kg_novelty</code> / <code>rag_verification</code> / <code>answer_grounding</code> / rationale doc数 から「本丸 / 監査 / 対照 / 名寄せ / その他」を派生で貼る。</p>
+
+  <h3>v2.0 経路 (answer_grounding 付き)</h3>
+  <div class="tree card">
+    <div class="branch">
+      <div class="leaf"><span class="cond">全doc必須 (leave-one-out) &amp; qt∈{traceability, multi_hop} &amp; rationale 2単位以上</span><br>→ <span class="result b-red" style="background:var(--red-soft)">本丸</span> <span style="color:var(--ink-faint);font-size:12.5px">KG-RAG の主戦場</span></div>
+      <div class="leaf"><span class="cond">1docが不要 &amp; qt∈{traceability, multi_hop} &amp; 2単位以上</span><br>→ <span class="result b-amber" style="background:var(--amber-soft)">監査</span> <span style="color:var(--ink-faint);font-size:12.5px">体裁だけ multi-doc</span></div>
+      <div class="leaf"><span class="cond">novelty == unknown_term</span> → <span class="result b-teal" style="background:var(--teal-soft)">名寄せ</span> <span style="color:var(--ink-faint);font-size:12.5px">表記揺れ・別名判定</span></div>
+      <div class="leaf"><span class="cond">qt == single_fact &amp; rag_verify == match</span> → <span class="result b-accent" style="background:var(--accent-soft)">対照</span> <span style="color:var(--ink-faint);font-size:12.5px">vector RAG が解けることを実証</span></div>
+      <div class="leaf">それ以外 → <span class="result b-green" style="background:var(--panel-2);color:var(--ink-soft)">その他</span></div>
+    </div>
+  </div>
+  <div class="note info"><b>v1 後方互換:</b> <code>answer_grounding</code> 未付与の旧データは、本丸条件を <code>rag_verify == no_match</code> で暫定判定する旧ロジックにフォールバック。v2.0 では partial で漏れていた問いも <code>no_match</code> 条件を外して救う。</div>
+</section>
+
+<!-- ============ 12. SCHEMA ============ -->
+<section id="schema">
+  <div class="sec-head"><div class="sec-num">12</div><h2>QA データのスキーマ — 3階層モデル</h2></div>
+  <p class="sec-sub"><code>schema.py</code> の <code>QAItem</code>。診断4軸と難易度は両トラック共通、主タグ部分だけトラックで分かれる。</p>
+
+  <div class="card">
+    <div class="layer l1">
+      <h4>階層① 能力評価軸 <span style="font-weight:400;color:var(--ink-soft);font-size:12px">— general で埋まる</span></h4>
+      <div class="fields"><b>category</b>: Integration / Reasoning / Logic / Figure / Abstention &nbsp;·&nbsp; <b>aspect</b>: 25観点</div>
+    </div>
+    <div class="layer l2">
+      <h4>階層② 診断軸 (富士通4軸, bool多重タグ) <span style="font-weight:400;color:var(--ink-soft);font-size:12px">— 両トラック共通</span></h4>
+      <div class="fields">
+        <b>reasoning_complexity</b>: multi_step / quantitative / negation / cause_effect / comparison / temporal + output_type<br>
+        <b>retrieval_difficulty</b>: multi_doc / multi_chunk / low_locality / remote_reference / doc_volume_large / chunk_size_large / …<br>
+        <b>source_structure</b>: tables_charts / complex_layout / specific_area_ref / logical_nesting / large_enumeration / redundancy<br>
+        <b>explainability</b>: evidence_strictness (no-evidence / hier-ref / coord-ref / multi-ref)
+      </div>
+    </div>
+    <div class="layer l3">
+      <h4>階層③ 難易度 <span style="font-weight:400;color:var(--ink-soft);font-size:12px">— 両トラック共通</span></h4>
+      <div class="fields"><b>retrieval_level</b>: Easy/Medium/Hard (アンカーから決定論算出) &nbsp;·&nbsp; <b>answer_level</b>: 判定LLMが実態で確定 &nbsp;·&nbsp; <b>difficulty_rationale</b></div>
+    </div>
+    <div class="layer l4">
+      <h4>kg_poc 専用 <span style="font-weight:400;color:var(--ink-soft);font-size:12px">— general では None</span></h4>
+      <div class="fields"><b>kg_query_type</b> / <b>kg_novelty</b> / <b>llm_knowledge</b> (probe で後付け) / <b>rag_verification</b> / <b>answer_grounding</b> / <b>relation_edges</b></div>
+    </div>
+    <div class="layer l5">
+      <h4>運用メタ <span style="font-weight:400;color:var(--ink-soft);font-size:12px">— 両トラック共通</span></h4>
+      <div class="fields"><b>qa_id</b>: sha1(anchors + 主タグ + question)[:8] で安定 &nbsp;·&nbsp; <b>generation</b> / <b>filter_scores</b> / <b>review_status</b> / <b>reviewed_by</b> / <b>reviewed_at</b></div>
+    </div>
+  </div>
+
+  <h3>25観点 × 5カテゴリ (general)</h3>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>カテゴリ</th><th>観点 (内部値 → 日本語)</th></tr></thead>
+      <tbody>
+        <tr><td><span class="cat-pill b-accent">Integration 統合</span></td><td class="mono">multi_source_integration 複数情報源の統合 · multi_doc_reference マルチドキュメント参照 · remote_reference 遠隔参照 · standards_reference 規格・規定番号参照</td></tr>
+        <tr><td><span class="cat-pill b-violet">Reasoning 推論</span></td><td class="mono">quantitative_calc 数値計算 · multi_hop マルチホップ · negation 否定推論 · causal 因果推論 · temporal 時間推論 · comparison_conditional 比較・条件判断</td></tr>
+        <tr><td><span class="cat-pill b-teal">Logic 論理</span></td><td class="mono">synonym_interpretation 同義関係 · numeric_inclusion 数値包含 · concept_inclusion 概念包含 · vocabulary_mismatch 語彙ミスマッチ · abstraction_gap 抽象度の乖離</td></tr>
+        <tr><td><span class="cat-pill b-amber">Figure 図表</span></td><td class="mono">simple_table 単純表 · complex_form 複雑帳票 · concept_diagram 概念図 · flowchart フローチャート · chart_graph グラフ · complex_layout 複雑レイアウト · large_enumeration 大量列挙</td></tr>
+        <tr><td><span class="cat-pill b-red">Abstention 棄権</span></td><td class="mono">insufficient_evidence 根拠不足 · contradictory_evidence 根拠の矛盾 · fragmented_chunk 不完全なチャンク区切り</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>3軸 = 5×3=15セル (kg_poc)</h3>
+  <div class="cols">
+    <div class="col-card"><h4>AXIS-1 クエリ型 <code>kg_query_type</code></h4><ul>
+      <li><code>single_fact</code> 単一ファクト (基準点)</li>
+      <li><code>multi_hop</code> マルチホップ</li>
+      <li><code>aggregation</code> 一覧・集約 (ベクターRAG弱点)</li>
+      <li><code>traceability</code> トレーサビリティ (QMS固有)</li>
+      <li><code>negation_exhaustive</code> 否定・網羅 (高難度)</li>
+    </ul></div>
+    <div class="col-card"><h4>AXIS-2 未知性 <code>kg_novelty</code></h4><ul>
+      <li><code>unknown_term</code> 未知語 (ノードに紐づけ)</li>
+      <li><code>unknown_relation</code> 未知の関係 <b>★KG導入の最強根拠</b></li>
+      <li><code>procedural_relation</code> 手順的関係 (typed-edge)</li>
+    </ul>
+    <h4 style="margin-top:16px">AXIS-3 LLM既知性 <code>llm_knowledge</code></h4><ul>
+      <li><code>known</code> 既知 (RAG無しで答えられる)</li>
+      <li><code>unknown</code> 未知 (RAG必須、主戦場) — <b>probe で決定</b></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ============ 13. LLM ============ -->
+<section id="llm">
+  <div class="sec-head"><div class="sec-num">13</div><h2>LLM ルーティングと堅牢化</h2></div>
+  <p class="sec-sub"><code>llm.py</code>。単一エントリ <code>generate(prompt, model, ...)</code> がモデル名でバックエンドを自動判定する。生成・判定・埋め込みで別モデル/別プロバイダを混在させられる。</p>
+
+  <h3>バックエンド自動判定 <code>_resolve_backend</code></h3>
+  <div class="tree card">
+    <div class="leaf"><span class="cond">model が claude* / anthropic/*</span> → <span class="result b-violet" style="background:var(--violet-soft)">Anthropic</span></div>
+    <div class="leaf"><span class="cond">model == AZURE_OPENAI_CHAT_DEPLOYMENT_NAME、または azure/*</span> → <span class="result b-accent" style="background:var(--accent-soft)">Azure OpenAI</span></div>
+    <div class="leaf">それ以外 → <span class="result b-green" style="background:var(--green-soft)">vLLM (OpenAI互換)</span></div>
+  </div>
+
+  <div class="cols">
+    <div class="col-card">
+      <h4>🔁 再試行 (tenacity)</h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)">最大6回、指数バックオフ (min 2s / max 60s)。Azure の流量制限 (429) は枠が60秒で回復するので、待ち上限を60秒まで伸ばして粘る。</p>
+    </div>
+    <div class="col-card">
+      <h4>🚫 プロキシ無視</h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)"><code>httpx.Client(trust_env=False)</code> でシステムプロキシを一切無視。一部環境で POST だけプロキシに握り潰され、GET は通るのに生成だけ落ちる事故を防ぐ。</p>
+    </div>
+    <div class="col-card">
+      <h4>🧩 JSON 堅牢化</h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)"><code>force_json=True</code> で <code>response_format=json_object</code>。パースは ```json フェンス除去 → 最初の均衡 <code>{...}</code> 抽出 の2段で救済。</p>
+    </div>
+    <div class="col-card">
+      <h4>📐 埋め込み <code>embed</code></h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)">別エンドポイント (<code>VLLM_EMBEDDING_ENDPOINT</code> / Ruri) を叩く。重複検知・多チャンク戦略・RAG検索で共用。L2正規化して使う。</p>
+    </div>
+  </div>
+</section>
+
+<hr class="soft">
+
+<div class="card" style="background:linear-gradient(180deg, var(--accent-soft), transparent)">
+  <h3 style="margin-top:0">まとめ — このパイプラインが守っている3原則</h3>
+  <div class="steps" style="margin-bottom:0">
+    <div class="step check"><div class="step-rail"><div class="step-dot">1</div><div class="step-line"></div></div><div class="step-body"><h4>生成と判定を別モデルに分ける</h4><p>生成 (vLLM Gemma系) の自己満足を、判定 (Azure/Claude) が外から採点する。さらに rag-verify で実走という第3の信号を足す。</p></div></div>
+    <div class="step check"><div class="step-rail"><div class="step-dot">2</div><div class="step-line"></div></div><div class="step-body"><h4>LLM を通さない決定論チェックを随所に挟む</h4><p>難易度算出・逐語根拠照合・9段の生成後検査・leave-one-out — LLM が「もっともらしく嘘をつく」経路を正規表現と照合で機械的に塞ぐ。</p></div></div>
+    <div class="step check"><div class="step-rail"><div class="step-dot">3</div><div class="step-line"></div></div><div class="step-body"><h4>偽の難しさを疑い続ける</h4><p>「2チャンクだが1文書」「体裁だけ multi-doc」「場所当て」「答えを質問に書いた試験文体」— KG-RAG 評価に値しない不良型を、各段で執拗に検出して落とす。</p></div></div>
+  </div>
+</div>
+
+<div class="footer">
+  rageval — 社内文書からの RAG 評価 QA データセット半自動構築ツールキット<br>
+  本ドキュメントは <code>src/rageval/</code> の実装から生成。設計根拠は <code>rag_eval_dataset_plan.md</code> / <code>rag_eval_dataset_r1_plan.md</code> 参照。
+</div>
+
+</div>
+
+<script>
+  (function(){
+    var btn = document.getElementById('themeToggle');
+    var root = document.documentElement;
+    function current(){
+      var t = root.getAttribute('data-theme');
+      if (t) return t;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    btn.addEventListener('click', function(){
+      var next = current() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+    });
+    // smooth scroll for toc
+    document.querySelectorAll('nav.toc a').forEach(function(a){
+      a.addEventListener('click', function(e){
+        var id = a.getAttribute('href');
+        if (id && id.charAt(0) === '#'){
+          var el = document.querySelector(id);
+          if (el){ e.preventDefault(); el.scrollIntoView({behavior:'smooth', block:'start'}); }
+        }
+      });
+    });
+  })();
+</script>
+</body>
+</html>
