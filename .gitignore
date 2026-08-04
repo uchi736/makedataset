@@ -24,6 +24,9 @@ data/*
 .vscode/
 .idea/
 
+# Node (webui)
+node_modules/
+
 # Pytest
 .pytest_cache/
 

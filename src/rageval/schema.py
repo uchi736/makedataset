@@ -98,14 +98,22 @@ class FilterScores(BaseModel):
 class RAGVerification(BaseModel):
     top_k: int
     retrieved_chunk_ids: list[str]
+    # 検索方式。dense = 密ベクトルのみ (旧)、hybrid = 密 + BM25 の RRF 融合。
+    # 実運用の RAG はハイブリッドがデファクトなので、2026-08-02 以降の
+    # スクリーニング (難易度実測・型確定) は hybrid を基準にする。
+    # hybrid_rerank = 密+BM25 の候補プールを交差エンコーダで並べ直す2段構成
+    # (本番 KG-OFF と同じ)。2026-08-04 以降のスクリーニング既定。
+    retrieval_mode: Literal["dense", "hybrid", "hybrid_rerank"] = "dense"
     # 文書一致: 根拠と同じ文書IDのチャンクが上位 k に1個でも入ったか。
     # ただし1文書が50を超えるチャンクに割れる技報では、根拠と無関係な
     # 章のチャンクが入っただけで真になるので、これだけでは過大評価になる。
     retrieval_hit_doc: bool = False
-    # チャンク一致: 根拠本文 (rationale.text) を逐語で含むチャンクが
-    # 上位 k に入ったか。filter 側の逐語照合と同じ空白正規化規則を使う。
+    # チャンク一致: **全ての根拠**について、その根拠本文を逐語で含むチャンクが
+    # 上位 k に入ったか (2026-08-01 に「いずれか1件」から変更)。
     # KG-RAG の検索健全性を見る本命指標。
     retrieval_hit_chunk: bool = False
+    # 逐語一致した根拠の割合 (部分命中を捨てずに持つ)。1.0 = retrieval_hit_chunk。
+    retrieval_hit_ratio: float = 0.0
     # 旧フィールド (既存 JSONL との互換のため残置)。
     # 新規書き出しでは retrieval_hit_doc と同じ値を入れる。
     retrieval_hit: bool = False
@@ -115,6 +123,10 @@ class RAGVerification(BaseModel):
     # 正常に match / partial / no_match が返ったときも、そのまま小文字化して保存する。
     # judge を呼ばなかった場合 (rag_answer が空 / 回答不能) や judge が例外で落ちた場合は None。
     judge_raw: Optional[str] = None
+    # judge が正常に判定を返したか。False は「照合できなかった」であって
+    # 「RAG が答えられなかった (no_match)」ではない。障害由来の no_match を
+    # KG候補として数えないための旗 (既定 True = 正常)。
+    judge_ok: bool = True
     rag_model: str
     judge_model: str
     verified_at: datetime
@@ -133,6 +145,43 @@ class RelationEdge(BaseModel):
     object_chunk_id: str     # target 側のチャンク (述語を本文 or section_path に含む)
 
 
+# ===== KG 経路 provenance (既存 KG から生成した QA のみ) =====
+
+class KGPathEdgeProvenance(BaseModel):
+    """原文との含意確認を通過した KG エッジ。"""
+
+    subject: str
+    predicate: str
+    object: str
+    source_chunk_id: str
+    extraction_count: int = 0
+    verification_reason: str
+
+
+class KGPathProvenance(BaseModel):
+    """QA の素材にした KG 経路と、その検証条件を固定する。"""
+
+    snapshot_id: str
+    path_text: str
+    edges: list[KGPathEdgeProvenance]
+    verifier_model: str
+    verified_at: datetime
+    # 供給系統。kg_covered = KG の経路から生成 (KG が有利)、
+    # kg_missing = 文書側で検証した明示参照のうち KG に対応が無いもの
+    # (= KG のカバレッジ不足を測る)、kg_decoy = 関係の無い対 (棄権が正解)。
+    source: Literal["kg_covered", "kg_missing", "kg_decoy"] = "kg_covered"
+    # 素材の形。chain = 2辺連鎖 (multi_hop/traceability)、star = 星型 (aggregation)、
+    # exclusion = EXCLUDES 辺 (negation)。型別の検品規則の切替キーにもなる。
+    shape: Literal["chain", "star", "exclusion"] = "chain"
+    # 段1 (合成判定) が書いた関係文。「この経路はこういう1本の関係として成り立つ」の
+    # 言語化。traceability の模範解答の素材にも使う。旧データは空文字。
+    composition_reason: str = ""
+    # unknown_term 変換の記録。質問文中の正規表記を KG の surface_forms にある
+    # 別表記へ機械置換した場合に {"canonical": 正規表記, "used": 使用表記} が入る。
+    # 空 dict = 置換なし。
+    term_substitution: dict[str, str] = Field(default_factory=dict)
+
+
 # ===== AnswerGrounding =====
 # 「rationale[i] を伏せたら answer が決まらなくなるか」を doc 単位で判定する。
 # Azure gpt-4.1 judge が doc ごとに「この doc を取り除いたとき answer の固有値が
@@ -146,7 +195,11 @@ class RelationEdge(BaseModel):
 
 class AnswerGrounding(BaseModel):
     # doc_id -> その doc を伏せても answer が決まるか (True = この doc は要らない)
+    # judge が落ちた単位はここに入れない (errors に入る)。
     per_doc_sufficient: dict[str, bool]
+    # judge が判定できなかった単位。1件でもあると本丸 (全根拠必須) とは認めない。
+    # 障害を「その根拠は必須」= 本丸認定に倒さないための旗。
+    errors: list[str] = Field(default_factory=list)
     judge_model: str
     # judge LLM が返した生 JSON (debug 用)
     judge_raw: Optional[str] = None
@@ -188,6 +241,7 @@ class QAItem(BaseModel):
     llm_knowledge: Optional[LLMKnowledge] = None   # `rageval probe` で後付け
     rag_verification: Optional[RAGVerification] = None  # `rageval rag-verify` で後付け
     relation_edges: list[RelationEdge] = Field(default_factory=list)  # sampling/enrich で注入
+    kg_path: Optional[KGPathProvenance] = None  # 検証済み既存 KG 経路から生成した場合に付与
     answer_grounding: Optional[AnswerGrounding] = None  # leave-one-out 判定で後付け or 生成時必須
 
     generation: GenerationInfo

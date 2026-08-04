@@ -12,9 +12,11 @@ back to random pick).
 
 from __future__ import annotations
 
+import json
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional, Protocol
 
 import numpy as np
@@ -85,6 +87,336 @@ def _refs_in_text(refs: set[str], text: str) -> bool:
     if not refs or not text:
         return False
     return any(ref in text for ref in refs)
+
+
+# ---------------- 文書スコープ規則 (v3: 別文書の同番号誤結合の根絶) ----------------
+# 「第N条」「様式第N」「別表第N」等は文書ローカルな識別子であり、別文書の同番号と
+# 突き合わせてはならない (plant_v15 で別法令の「第63条」「第7条」を同一視した捏造
+# QA が 3/25 混入した実害あり)。異文書ペアの成立は次の3系統に限る:
+#   (a) 全域一意な規格番号 (JIS/ISO/IEC/ASME/JPI 等) の共有
+#   (b) 明示参照 — 相手文書の名称・別名を本文が名指ししている (doc_aliases 台帳)
+#   (c) 解決済みエッジ台帳 (seeds/anchor_pairs_manual_v1.jsonl) に載っているチャンク対
+
+_GLOBAL_REF_RE = re.compile(r"^(?:JIS|ISO|IEC|ASME|JPI|JEC|JEM|API|EN|NFPA)\b", re.IGNORECASE)
+
+# 「ボイラー則第百一条第二号ロ」のように、文書名の直後に来る条番号を拾う。
+# コーパスは漢数字 (02_boiler_anzen) と全角算用数字 (09_kagi) が混在する。
+# 「第56条」が「第56条の6の2」(枝番条文 = 別の条) に部分一致しないよう、
+# 直後に「の+数字」が続く場合は不一致とする (2026-08-03: kg_missing 供給の
+# 偽参照を Qwen 判定が発見したことで発覚)。
+_ARTICLE_AFTER_ALIAS_RE = re.compile(
+    r"第([0-9０-９一二三四五六七八九十百千]+)条(?!の[0-9０-９一二三四五六七八九十])")
+_KANJI_DIGITS = {"〇": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+                 "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _kanji_to_int(s: str) -> Optional[int]:
+    """漢数字 (百一 / 十五 / 三) を整数にする。実装は evidence.kanji_to_int に集約。"""
+    from .evidence import kanji_to_int
+    return kanji_to_int(s)
+
+
+def article_number(token: str) -> Optional[int]:
+    """「第百一条」「第１０１条」「第101条」→ 101。解釈できなければ None。"""
+    m = _ARTICLE_AFTER_ALIAS_RE.search(token)
+    if not m:
+        return None
+    body = m.group(1)
+    # 全角算用数字 → 半角
+    trans = body.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    if trans.isdigit():
+        return int(trans)
+    return _kanji_to_int(body)
+
+
+def _article_variants(n: int) -> list[str]:
+    """条番号 n を、コーパスに現れうる表記に展開する (半角/全角/漢数字)。"""
+    half = str(n)
+    full = half.translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+    out = [f"第{half}条", f"第{full}条"]
+    kanji = _int_to_kanji(n)
+    if kanji:
+        out.append(f"第{kanji}条")
+    return out
+
+
+def _int_to_kanji(n: int) -> Optional[str]:
+    """101 → 百一 (法令の条番号表記)。4桁までの簡易変換。"""
+    if not (0 < n < 10000):
+        return None
+    digits = "〇一二三四五六七八九"
+    units = [(1000, "千"), (100, "百"), (10, "十")]
+    out = ""
+    rest = n
+    for value, unit in units:
+        q, rest = divmod(rest, value)
+        if q:
+            out += ("" if q == 1 else digits[q]) + unit
+    if rest:
+        out += digits[rest]
+    return out or None
+
+
+def _is_global_ref(ref: str) -> bool:
+    """コーパス全域で一意に解決できる参照 (規格番号) か。"""
+    return bool(_GLOBAL_REF_RE.match(ref.strip()))
+
+
+def _global_refs(refs) -> set[str]:
+    return {r for r in (refs or []) if _is_global_ref(r)}
+
+
+@dataclass
+class CrossDocPolicy:
+    """異文書チャンク対の成立可否を判定する規則の束。
+
+    generate 側が load_cross_doc_policy() で台帳を読み込んで差し替える。
+    台帳なしの既定状態でも (a) 規格番号の共有だけは機能する。
+
+    doc_ns は文書の名前空間 (例: プラント名)。「設備保全管理規程」のような短名は
+    コーパス全体では曖昧でも、同じ名前空間の中では一意に解決できる。名前空間が
+    両方に定義されている場合、別名の名指しは同一名前空間内でのみ有効。
+    """
+    allowed_chunk_pairs: set[frozenset] = field(default_factory=set)
+    doc_aliases: dict[str, list[str]] = field(default_factory=dict)
+    doc_ns: dict[str, str] = field(default_factory=dict)
+
+    def _ns_compatible(self, a: Chunk, b: Chunk) -> bool:
+        ns_a, ns_b = self.doc_ns.get(a.doc_id), self.doc_ns.get(b.doc_id)
+        if ns_a is None or ns_b is None:
+            return True
+        return ns_a == ns_b
+
+    def _named_ok(self, a: Chunk, b: Chunk) -> bool:
+        """一方の本文が他方の文書名 (別名) を名指ししているか。
+
+        名前空間が異なる文書同士は、短名の名指しでは繋がない (双子プラントの
+        「検査様式集」問題)。ただしプラント名付きの完全名・文書番号は
+        名前空間を跨いでも一意なので、別名側に残っていれば成立する。
+        """
+        same_ns = self._ns_compatible(a, b)
+        for alias in self.doc_aliases.get(b.doc_id, []):
+            if alias and alias in a.text and (same_ns or self._alias_unique(alias)):
+                return True
+        for alias in self.doc_aliases.get(a.doc_id, []):
+            if alias and alias in b.text and (same_ns or self._alias_unique(alias)):
+                return True
+        return False
+
+    def _alias_unique(self, alias: str) -> bool:
+        """別名がコーパス全体で一意 (1文書だけが名乗る) か。"""
+        owners = sum(1 for names in self.doc_aliases.values() if alias in names)
+        return owners <= 1
+
+    def named_reference(self, anchor: Chunk, target_doc: str) -> Optional[int]:
+        """anchor 本文が target_doc を名指ししているとき、その直後の条番号を返す。
+
+        「ボイラー則第百一条第二号ロ」→ 101。条番号が付いていなければ None。
+        """
+        for alias in self.doc_aliases.get(target_doc, []):
+            if not alias or alias not in anchor.text:
+                continue
+            pos = anchor.text.find(alias) + len(alias)
+            tail = anchor.text[pos:pos + 20]     # 名指しの直後だけ見る
+            n = article_number(tail)
+            if n is not None:
+                return n
+        return None
+
+    def resolve_named_target(
+        self,
+        anchor: Chunk,
+        target_chunks: list[Chunk],
+        *,
+        similarity: Optional[Callable[[Chunk], float]] = None,
+        sim_floor: float = 0.45,
+        allow_similarity_fallback: bool = False,
+    ) -> Optional[Chunk]:
+        """名指しされた文書の中から、実際に参照している1チャンクを決める。
+
+        文書名の名指しだけで接続を認めると、相手文書の**全チャンク**が候補になり
+        (plant で1アンカーあたり中央値79・最大531)、無関係な章が対に選ばれていた。
+        参照先を次の順で1つに絞る:
+          1. 名指しの直後の条番号 (例「ボイラー則第百一条」) が見出し位置に現れるチャンク
+          2. (1) が無ければ、その条番号を本文に含むチャンク
+          3. 条番号が書かれていない場合、allow_similarity_fallback=True のときだけ
+             埋め込み類似の最上位 (下限つき)
+        どれも決まらなければ None (= その対は使わない)。
+
+        類似フォールバックは既定で無効。相手文書に絞ってはいるものの、結局
+        「類似＝関係」を持ち込み直しており検証手段が無いため (この誤りで
+        「防毒呼吸具 × 液化ガス容器」のような対を掴んだ履歴がある)。
+        """
+        if not target_chunks:
+            return None
+        n = self.named_reference(anchor, target_chunks[0].doc_id)
+        if n is not None:
+            variants = _article_variants(n)
+            heading: list[Chunk] = []
+            body: list[Chunk] = []
+            for c in target_chunks:
+                for v in variants:
+                    # 枝番条文 (第N条の6の2) への部分一致を除く (regex 側と同じ規則)
+                    m_v = re.search(
+                        re.escape(v) + r"(?!の[0-9０-９一二三四五六七八九十])", c.text)
+                    idx = m_v.start() if m_v else -1
+                    if idx < 0:
+                        continue
+                    # 条文の本体は「第N条 …」で始まる。チャンク先頭寄り or
+                    # 直前が改行なら見出し (= 参照先そのもの) とみなす。
+                    if idx < 80 or (idx > 0 and c.text[idx - 1] in "\n 　"):
+                        heading.append(c)
+                    else:
+                        body.append(c)
+                    break
+            if heading:
+                return heading[0]
+            if body:
+                return body[0]
+            return None    # 名指しの条番号が相手文書に無い → 接続が成立しない
+        if similarity is None or not allow_similarity_fallback:
+            return None
+        best = max(target_chunks, key=similarity)
+        return best if similarity(best) >= sim_floor else None
+
+    def describe_join(self, a: Chunk, b: Chunk) -> Optional[str]:
+        """異文書対の接続根拠を、生成プロンプトに渡せる一文で返す。
+
+        join_ok と同じ判定を「どの規則で成立したか」まで含めて言語化する。
+        成立しない対 (または同一文書) は None。
+        """
+        if a.doc_id == b.doc_id:
+            return None
+        if frozenset((a.chunk_id, b.chunk_id)) in self.allowed_chunk_pairs:
+            return "検証済みエッジ台帳に登録された対 (実在する参照関係を人手で確認済み)"
+        a_glob, b_glob = _global_refs(a.references), _global_refs(b.references)
+        shared = a_glob & b_glob
+        if not shared:
+            shared = {r for r in a_glob if r in b.text} | {r for r in b_glob if r in a.text}
+        if shared:
+            return f"両チャンクが同じ規格 {'、'.join(sorted(shared))} を参照している"
+        same_ns = self._ns_compatible(a, b)
+        for src, dst in ((a, b), (b, a)):
+            for alias in self.doc_aliases.get(dst.doc_id, []):
+                if not alias or alias not in src.text:
+                    continue
+                if not (same_ns or self._alias_unique(alias)):
+                    continue
+                n = self.named_reference(src, dst.doc_id)
+                if n is not None:
+                    return (f"一方の本文が『{alias}第{n}条』と名指しし、"
+                            f"もう一方がその条文そのもの")
+                return f"一方の本文が文書『{alias}』(もう一方のチャンクの文書) を名指しして参照している"
+        return None
+
+    # 異文書対を作れるチャンクの索引 (index_cross_capable が構築)。
+    # 一様ランダム抽選だと台帳対・明示参照チャンクがほぼ引かれず、
+    # 本丸 (文書跨ぎ) の供給が偶然任せになるため、抽選側が優先に使う。
+    cross_capable_chunk_ids: set = field(default_factory=set)
+
+    def index_cross_capable(self, chunks: list[Chunk]) -> None:
+        """異文書対の成立根拠を持つチャンクを1回走査で索引化する。"""
+        capable: set[str] = set()
+        # (c) 台帳のチャンク対
+        for pair in self.allowed_chunk_pairs:
+            capable.update(pair)
+        # (a) 規格番号: 同じ規格を2文書以上が参照していれば、その参照元は対を作れる
+        ref_docs: dict[str, set[str]] = {}
+        for c in chunks:
+            for r in _global_refs(c.references):
+                ref_docs.setdefault(r, set()).add(c.doc_id)
+        shared_refs = {r for r, docs in ref_docs.items() if len(docs) >= 2}
+        for c in chunks:
+            if _global_refs(c.references) & shared_refs:
+                capable.add(c.chunk_id)
+        # (b) 明示参照: 他文書の別名を本文で名指ししているチャンク
+        alias_owner: dict[str, str] = {}
+        for doc, names in self.doc_aliases.items():
+            for name in names:
+                alias_owner[name] = doc
+        for c in chunks:
+            for name, owner in alias_owner.items():
+                if owner != c.doc_id and name in c.text:
+                    ns_c, ns_o = self.doc_ns.get(c.doc_id), self.doc_ns.get(owner)
+                    if (ns_c is None or ns_o is None or ns_c == ns_o) or self._alias_unique(name):
+                        capable.add(c.chunk_id)
+                        break
+        self.cross_capable_chunk_ids = capable
+
+    def join_ok(self, anchor: Chunk, cand: Chunk) -> bool:
+        """異文書チャンク対として成立するか。同一文書なら常に True。
+
+        裸の条番号・様式番号の一致は根拠として認めない (別文書の同番号は別物)。
+        """
+        if anchor.doc_id == cand.doc_id:
+            return True
+        if frozenset((anchor.chunk_id, cand.chunk_id)) in self.allowed_chunk_pairs:
+            return True  # 台帳のチャンク対はそれ自体が解決済みエッジ
+        a_glob, c_glob = _global_refs(anchor.references), _global_refs(cand.references)
+        if a_glob & c_glob:
+            return True
+        if _refs_in_text(a_glob, cand.text) or _refs_in_text(c_glob, anchor.text):
+            return True
+        return self._named_ok(anchor, cand)
+
+
+# 既定は台帳なし。generate_batch が load_cross_doc_policy() で差し替える。
+CROSS_DOC_POLICY = CrossDocPolicy()
+
+
+def load_cross_doc_policy(
+    anchor_pairs_path: Optional[Path] = None,
+    aliases_path: Optional[Path] = None,
+) -> CrossDocPolicy:
+    """seeds のエッジ台帳・文書別名台帳から CrossDocPolicy を作る。
+
+    - anchor_pairs_path: anchor_pairs_manual_v1.jsonl 形式
+      (各行 {"anchors": [{"chunk_id": ...}, ...]})。anchors 内の全2点組を許可対に登録。
+    - aliases_path: {"doc_id": ["名称", "略称", ...]} の JSON。無ければ空。
+    """
+    pairs: set[frozenset] = set()
+    if anchor_pairs_path and anchor_pairs_path.exists():
+        with anchor_pairs_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ids = [a.get("chunk_id") for a in rec.get("anchors", []) if a.get("chunk_id")]
+                for i in range(len(ids)):
+                    for j in range(i + 1, len(ids)):
+                        pairs.add(frozenset((ids[i], ids[j])))
+    aliases: dict[str, list[str]] = {}
+    doc_ns: dict[str, str] = {}
+    if aliases_path and aliases_path.exists():
+        try:
+            data = json.loads(aliases_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(v, list):
+                        aliases[str(k)] = [str(x) for x in v]
+                    elif isinstance(v, dict):
+                        aliases[str(k)] = [str(x) for x in v.get("aliases", [])]
+                        if v.get("ns"):
+                            doc_ns[str(k)] = str(v["ns"])
+        except json.JSONDecodeError:
+            pass
+    # 同じ名前空間の中で複数文書が名乗る別名は解決不能なので落とす
+    # (名前空間を跨ぐ重複は _named_ok が判定時に処理する)。
+    owner_count: dict[tuple, int] = {}
+    for doc, names in aliases.items():
+        ns = doc_ns.get(doc)
+        for name in names:
+            owner_count[(ns, name)] = owner_count.get((ns, name), 0) + 1
+    dropped = {key for key, cnt in owner_count.items() if cnt >= 2}
+    if dropped:
+        print(f"[sampling] 名前空間内で曖昧な別名 {len(dropped)} 件を無効化: "
+              f"{sorted(n for _, n in dropped)[:5]} …")
+        aliases = {d: [n for n in names if (doc_ns.get(d), n) not in dropped]
+                   for d, names in aliases.items()}
+    return CrossDocPolicy(allowed_chunk_pairs=pairs, doc_aliases=aliases, doc_ns=doc_ns)
 
 
 def _has_table(chunk: Chunk) -> bool:
@@ -279,6 +611,9 @@ class ReferenceFollow:
     # では文書間参照が存在しないため、遠隔チャンク間の条文参照が本丸素材になる。
     # None なら従来どおり (force_distinct_doc に従う)。
     min_same_doc_gap: Optional[int] = None
+    # 名指しに条番号が無いとき、埋め込み類似で参照先チャンクを推測してよいか。
+    # 既定 False。「類似＝関係」を相手文書の中に持ち込み直すだけで検証手段が無い。
+    allow_similarity_fallback: bool = False
 
     def _same_doc_ok(self, anchor: Chunk, c: Chunk) -> bool:
         """同一 doc の target を採用してよいか。"""
@@ -295,22 +630,68 @@ class ReferenceFollow:
                 anchors_with_refs = specific
         if not anchors_with_refs:
             return [rng.choice(chunks)]
-        anchor = rng.choice(anchors_with_refs)
+        # v3: 異文書対を作れるアンカー (台帳対・規格共有・明示参照) を優先抽選する。
+        # 一様ランダムだと 3,000+ チャンク中の数十箇所がほぼ引かれず、
+        # 本丸 (文書跨ぎ) の供給が偶然任せになるため、7割の確率で優先枠から引く。
+        capable_ids = CROSS_DOC_POLICY.cross_capable_chunk_ids
+        capable = [c for c in anchors_with_refs if c.chunk_id in capable_ids]
+        if capable and rng.random() < 0.7:
+            anchor = rng.choice(capable)
+        else:
+            anchor = rng.choice(anchors_with_refs)
         refs = anchor.references
         if self.prefer_specific:
             spec_refs = [r for r in refs if _SPECIFIC_REF_RE.search(r)]
             refs = spec_refs or refs
         # Find chunks whose text or section_path mentions any of anchor's refs
         targets: list[Chunk] = []
-        for ref in refs:
-            for c in chunks:
-                if c.chunk_id == anchor.chunk_id:
+        for c in chunks:
+            if c.chunk_id == anchor.chunk_id:
+                continue
+            same_doc = c.doc_id == anchor.doc_id
+            if same_doc:
+                if not self._same_doc_ok(anchor, c):
                     continue
-                if c.doc_id == anchor.doc_id and not self._same_doc_ok(anchor, c):
-                    continue
+                # 同一文書内: 条番号・別表番号などのローカル参照で辿ってよい
                 blob = c.text + " " + " ".join(c.section_path)
-                if ref in blob:
+                if any(ref in blob for ref in refs):
                     targets.append(c)
+            else:
+                # 異文書: 裸の条番号一致では繋がない。台帳対・規格番号共有・
+                # 明示参照 (文書スコープ規則) を満たす対だけ採用する。
+                # ただし明示参照は「文書」までしか決めないので、後段で
+                # 参照先チャンクまで解決する (下の by_doc 処理)。
+                if CROSS_DOC_POLICY.join_ok(anchor, c):
+                    targets.append(c)
+
+        # v3.1: 名指し由来の候補は文書単位で来る。その文書の中から実際に
+        # 参照している1チャンクへ絞り込む (絞れなければその文書は使わない)。
+        by_target_doc: dict[str, list[Chunk]] = {}
+        for c in targets:
+            if c.doc_id != anchor.doc_id:
+                by_target_doc.setdefault(c.doc_id, []).append(c)
+        if by_target_doc:
+            # 条番号が書かれていない名指しは、相手文書内の埋め込み類似で絞る。
+            sim_fn = None
+            if embeddings is not None:
+                row = {c.chunk_id: i for i, c in enumerate(chunks)}
+                a_idx = row.get(anchor.chunk_id)
+                if a_idx is not None:
+                    def sim_fn(c: Chunk, _a=a_idx) -> float:  # noqa: E306
+                        j = row.get(c.chunk_id)
+                        return float(embeddings[j] @ embeddings[_a]) if j is not None else -1.0
+            resolved: list[Chunk] = [c for c in targets if c.doc_id == anchor.doc_id]
+            for doc, cands in by_target_doc.items():
+                if len(cands) == 1:
+                    resolved.extend(cands)   # 台帳対・規格共有で既に1点に決まっている
+                    continue
+                picked = CROSS_DOC_POLICY.resolve_named_target(
+                    anchor, cands, similarity=sim_fn,
+                    allow_similarity_fallback=self.allow_similarity_fallback,
+                )
+                if picked is not None:
+                    resolved.append(picked)
+            targets = resolved
         # Deduplicate while preserving order
         seen: dict[str, Chunk] = {}
         for c in targets:
@@ -368,10 +749,16 @@ class MultiDocByEmbedding:
             if self.exclude_list_chunks and _is_list_chunk(c):
                 continue
             if self.require_article_overlap:
-                cand_refs = set(c.references or [])
-                if not (anchor_refs & cand_refs) and not _refs_in_text(anchor_refs, c.text):
-                    # 参照番号レベルの重なりが無い → 意味的接続が弱い → skip
-                    continue
+                if c.doc_id == anchor.doc_id:
+                    # 同一文書内: 従来どおり参照番号の重なりで接続を確認
+                    cand_refs = set(c.references or [])
+                    if not (anchor_refs & cand_refs) and not _refs_in_text(anchor_refs, c.text):
+                        continue
+                else:
+                    # 異文書: 裸の条番号・様式番号の一致は「別法令の同番号」を
+                    # 拾う誤結合源なので根拠にしない。文書スコープ規則で判定。
+                    if not CROSS_DOC_POLICY.join_ok(anchor, c):
+                        continue
             picked.append(c)
             seen_docs.add(c.doc_id)
             if len(picked) >= self.n:
@@ -379,11 +766,13 @@ class MultiDocByEmbedding:
         if len(picked) == 1 and not self.force_distinct_doc:
             # 多 doc 制約が緩い戦略 (multi_source_integration / multi_hop) では、
             # 同 doc の高類似チャンクで 2 個目を埋めて運用する (fallback)。
+            # v3: 同一文書に限定する。異文書を無条件で埋めると、上の文書スコープ
+            # 検査を素通りして双子文書 (白波×青灘の同名記録など) が対になる。
             for i in order:
                 if sims[i] < self.sim_floor:
                     break
                 c = chunks[int(i)]
-                if c.chunk_id != anchor.chunk_id:
+                if c.chunk_id != anchor.chunk_id and c.doc_id == anchor.doc_id:
                     picked.append(c)
                     break
         # 注意: force_distinct_doc=True (multi_doc_reference 用) のときは、
@@ -503,6 +892,9 @@ class AnchorSampler:
          "this aspect can't be supported by this corpus".
     """
 
+    # 1バッチ内で同一の異文書対から作れる問いの上限 (近似重複の量産防止)
+    MAX_PER_DOC_PAIR = 2
+
     def __init__(self, chunks: list[Chunk], embeddings: Optional[np.ndarray]):
         self.chunks = chunks
         self.embeddings = embeddings
@@ -512,6 +904,25 @@ class AnchorSampler:
         self.compat_misses: dict[str, int] = {}
         # Multi-chunk aspect でコーパスが組成を作れず skip した回数
         self.difficulty_misses: dict[str, int] = {}
+        # v3: アンカー分散制約 — 消費済みのチャンク組と異文書対の使用回数。
+        # 同じアンカー対から複数問作ると uniqueness でまとめて落ちる
+        # (kitei 初回バッチで 15問中9問が近似重複落ち) ため、バッチ内で分散させる。
+        self.used_chunk_sets: set[frozenset] = set()
+        self.doc_pair_counts: dict[frozenset, int] = {}
+        self.diversity_rejects: int = 0
+
+    def commit(self, anchors: list[Chunk]) -> None:
+        """QA が全チェックを通過したときに、そのアンカー組を使用済みとして確定する。
+
+        select() の時点で確定すると、後段 (LLM 出力不正・捏造用語・単一doc など)
+        で棄却された分まで枠を消費し、指定数に届かないまま終わる。
+        """
+        if not anchors:
+            return
+        self.used_chunk_sets.add(frozenset(c.chunk_id for c in anchors))
+        doc_set = frozenset(c.doc_id for c in anchors)
+        if len(doc_set) >= 2:
+            self.doc_pair_counts[doc_set] = self.doc_pair_counts.get(doc_set, 0) + 1
 
     def _subset_embeddings(self, subset: list[Chunk]) -> Optional[np.ndarray]:
         if self.embeddings is None:
@@ -547,8 +958,21 @@ class AnchorSampler:
         # Multi-chunk 観点: 複数チャンクの組成を作れるまで再抽選。
         for _ in range(max_resamples):
             anchors = strat.select(compat, embeddings, rng)
-            if anchors and len(anchors) >= 2:
-                return anchors
+            if not anchors or len(anchors) < 2:
+                continue
+            # v3: 分散制約 — 使用済みのチャンク組は再抽選、異文書対は上限まで
+            chunk_set = frozenset(c.chunk_id for c in anchors)
+            doc_set = frozenset(c.doc_id for c in anchors)
+            if chunk_set in self.used_chunk_sets:
+                self.diversity_rejects += 1
+                continue
+            if len(doc_set) >= 2 and self.doc_pair_counts.get(doc_set, 0) >= self.MAX_PER_DOC_PAIR:
+                self.diversity_rejects += 1
+                continue
+            # ここでは予約しない。QA が全チェックを通過してから commit() で確定する
+            # (棄却された QA のぶんで枠を食い潰し、指定数・指定 mix に届かなくなる
+            #  のを防ぐ)。同一呼び出し内での重複抽選は上の判定で弾かれる。
+            return anchors
         # コーパスがこの観点の組成を作れない → skip させる。
         self.difficulty_misses[aspect] = self.difficulty_misses.get(aspect, 0) + 1
         return None

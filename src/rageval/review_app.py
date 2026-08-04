@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
+import os
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import streamlit as st
 
@@ -245,11 +249,103 @@ def _load_items(path: Path, track_filter: str = "all") -> list[QAItem]:
     return items
 
 
-def _save_items(items: list[QAItem], out_path: Path) -> None:
+def _filter_items_by_track(items: list[QAItem], track_filter: str) -> list[QAItem]:
+    """Return a view of ``items`` without copying the QA objects."""
+    if track_filter == "all":
+        return list(items)
+    want_kg = track_filter == "kg_poc"
+    return [
+        qa for qa in items
+        if (qa.kg_query_type is not None or qa.kg_novelty is not None) == want_kg
+    ]
+
+
+def _merge_reviewed_items(
+    source_items: list[QAItem], reviewed_items: list[QAItem],
+) -> list[QAItem]:
+    """Overlay prior review results while keeping the source file's full shape.
+
+    Older versions could write only the currently visible track to the mirror.
+    Treating the mirror as the entire dataset would therefore hide the other
+    track forever.  The source file remains authoritative for membership/order;
+    a matching reviewed item replaces only that source item.
+    """
+    reviewed_by_id = {qa.qa_id: qa for qa in reviewed_items}
+    return [reviewed_by_id.get(qa.qa_id, qa) for qa in source_items]
+
+
+def _atomic_write_lines(out_path: Path, lines: list[str]) -> None:
+    """Atomically replace ``out_path`` with UTF-8 JSONL ``lines``."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as f:
-        for qa in items:
-            f.write(qa.model_dump_json() + "\n")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{out_path.name}.", suffix=".tmp", dir=out_path.parent,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            for line in lines:
+                f.write(line.rstrip("\r\n") + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, out_path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        finally:
+            raise
+
+
+def _save_items(items: list[QAItem], out_path: Path) -> None:
+    _atomic_write_lines(out_path, [qa.model_dump_json() for qa in items])
+
+
+def _save_review_item(qa: QAItem, source_path: Path, out_path: Path) -> None:
+    """Patch one QA into a complete mirror of its source JSONL.
+
+    The source file defines membership and order. Existing review results are
+    overlaid by qa_id, then ``qa`` is applied. This prevents track/category/file
+    filters from dropping rows and also repairs mirrors produced by older
+    partial-view saves. Unparseable legacy lines are preserved verbatim.
+    """
+    source_path = source_path.resolve()
+    out_path = out_path.resolve()
+
+    reviewed_by_id: dict[str, str] = {}
+    if out_path.exists() and out_path != source_path:
+        with out_path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\r\n")
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                qa_id = obj.get("qa_id") if isinstance(obj, dict) else None
+                if isinstance(qa_id, str):
+                    reviewed_by_id[qa_id] = line
+
+    updated_line = qa.model_dump_json()
+    out_lines: list[str] = []
+    found = False
+    with source_path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.rstrip("\r\n")
+            try:
+                obj = json.loads(line)
+            except Exception:
+                out_lines.append(line)
+                continue
+            qa_id = obj.get("qa_id") if isinstance(obj, dict) else None
+            if qa_id == qa.qa_id and not found:
+                out_lines.append(updated_line)
+                found = True
+            elif isinstance(qa_id, str) and qa_id in reviewed_by_id:
+                out_lines.append(reviewed_by_id[qa_id])
+            else:
+                out_lines.append(line)
+
+    if not found:
+        raise ValueError(f"qa_id が元ファイルに見つかりません: {qa.qa_id} ({source_path})")
+    _atomic_write_lines(out_path, out_lines)
 
 
 def _status_counts(items: list[QAItem]) -> dict[str, int]:
@@ -353,6 +449,19 @@ def _checklist_groups(qa: QAItem) -> list[tuple[str, list[tuple[str, str, str]]]
     ]
 
 
+_STATUS_DOT = {"pending": "⚪", "accepted": "🟢", "edited": "🔵", "rejected": "🔴"}
+
+
+def _next_pending_index(view: list[QAItem], start: int) -> int | None:
+    """view の start より後 (循環) で最初の未判定の位置を返す。無ければ None。"""
+    n = len(view)
+    for step in range(1, n + 1):
+        i = (start + step) % n
+        if view[i].review_status == "pending":
+            return i
+    return None
+
+
 def render_review_panel(
     items: list[QAItem],
     out_path: Path,
@@ -363,49 +472,99 @@ def render_review_panel(
     show_header: bool = True,
     track_label: str = "",
     input_label: str = "",
+    save_items: list[QAItem] | None = None,
+    on_save: Callable[[QAItem], None] | None = None,
 ) -> None:
-    """Render the per-QA review panel (header + body + action bar).
+    """Render the per-QA review panel (header + 左ナビ + body + action bar).
 
     Reusable from both standalone review_app and integrated stats dashboard.
     State is kept in `st.session_state[f'{key_prefix}_idx']`.
-    On Accept/Edit/Reject, mutates items[idx] and writes JSONL to out_path.
+    On Accept/Edit/Reject, mutates the QAItem in place and writes JSONL to out_path.
     """
-    total = len(items)
-    if total == 0:
-        st.warning("No items to review.")
+    total_all = len(items)
+    if total_all == 0:
+        st.warning("レビュー対象の QA がありません。データセットや絞り込みを確認してください。")
         return
 
+    counts = _status_counts(items)
+    done = total_all - counts["pending"]
     idx_key = f"{key_prefix}_idx"
-    if idx_key not in st.session_state:
-        st.session_state[idx_key] = 0
-    idx = st.session_state[idx_key]
-    idx = max(0, min(idx, total - 1))
-    qa = items[idx]
+    pending_key = f"{key_prefix}_pending_only"
+    st.session_state.setdefault(idx_key, 0)
 
-    # Header: 進捗バー + 判定の集計 + ナビ
+    # ---- 上部ストリップ: 進捗 + 集計 + 導線 (未判定のみ / 次の未判定へ) ----
+    pending_only = st.session_state.get(pending_key, False)
     if show_header:
-        counts = _status_counts(items)
-        done = total - counts["pending"]
-        st.progress(done / total if total else 0, text=f"査読済み {done} / {total} 問")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("採用", counts["accepted"])
-        m2.metric("修正", counts["edited"])
-        m3.metric("却下", counts["rejected"])
-        m4.metric("未判定", counts["pending"])
-        nav1, nav2, nav3 = st.columns([1, 1, 4])
-        with nav1:
+        c_prog, c_count, c_toggle, c_next = st.columns([3, 3, 2, 2])
+        with c_prog:
+            st.progress(
+                done / total_all if total_all else 0,
+                text=f"査読済み {done} / {total_all} 問 ({done / total_all * 100:.0f}%)",
+            )
+        with c_count:
+            st.caption(
+                f"🟢 採用 {counts['accepted']}　🔵 修正 {counts['edited']}　"
+                f"🔴 却下 {counts['rejected']}　⚪ 未判定 {counts['pending']}"
+            )
+        with c_toggle:
+            pending_only = st.checkbox("未判定のみ表示", key=pending_key)
+        with c_next:
+            if st.button(
+                "次の未判定へ", width="stretch", type="primary",
+                disabled=counts["pending"] == 0 or pending_only,
+                key=f"{key_prefix}_nextpending",
+                help="未判定の問いへ飛ぶ (未判定のみ表示中は不要)",
+            ):
+                nxt = _next_pending_index(items, st.session_state[idx_key])
+                if nxt is not None:
+                    st.session_state[idx_key] = nxt
+                    st.rerun()
+
+    view = [it for it in items if it.review_status == "pending"] if pending_only else items
+    if not view:
+        st.success(
+            "全問レビュー済みです。data/reviewed/ のファイルがコミット対象になります。"
+            "判定を見直す場合は『未判定のみ表示』を外してください。",
+            icon=":material/check_circle:",
+        )
+        return
+
+    idx = max(0, min(st.session_state[idx_key], len(view) - 1))
+    st.session_state[idx_key] = idx
+    qa = view[idx]
+
+    # ---- 左: ナビ一覧 / 右: 本体 ----
+    nav_col, body_col = st.columns([1, 3], gap="medium")
+    with nav_col:
+        st.caption((("未判定 " if pending_only else "全 ") + f"{len(view)} 問 — クリックで移動"))
+        with st.container(height=560, border=False):
+            for i, it in enumerate(view):
+                dot = _STATUS_DOT.get(it.review_status, "⚪")
+                label = f"{dot} {i + 1}. {it.question[:24]}"
+                if st.button(
+                    label, key=f"{key_prefix}_nav_{i}", width="stretch",
+                    type="primary" if i == idx else "secondary",
+                ):
+                    st.session_state[idx_key] = i
+                    st.rerun()
+    with body_col:
+        n1, n2, n3 = st.columns([1, 1, 4])
+        with n1:
             if st.button("← 前へ", disabled=idx == 0, width="stretch", key=f"{key_prefix}_prev"):
                 st.session_state[idx_key] = idx - 1
                 st.rerun()
-        with nav2:
-            if st.button("次へ →", disabled=idx >= total - 1, width="stretch", key=f"{key_prefix}_next"):
+        with n2:
+            if st.button("次へ →", disabled=idx >= len(view) - 1, width="stretch", key=f"{key_prefix}_next"):
                 st.session_state[idx_key] = idx + 1
                 st.rerun()
-        with nav3:
-            st.caption(f"{idx + 1} 問目 / 全 {total} 問")
-        st.divider()
-
-    _render_review_body(qa, items, idx, out_path, chunks_dir, reviewer, key_prefix=key_prefix)
+        with n3:
+            st.caption(f"{idx + 1} / {len(view)} 問")
+        _render_review_body(
+            qa, save_items if save_items is not None else items, view, idx,
+            out_path, chunks_dir, reviewer,
+            key_prefix=key_prefix, pending_only=pending_only,
+            on_save=on_save,
+        )
 
 
 def main() -> None:
@@ -418,17 +577,19 @@ def main() -> None:
     track_filter = getattr(args, "track", "all")
     # When session was started with a different filter, reload.
     if (
-        "qa_items" not in st.session_state
+        "qa_items_all" not in st.session_state
         or st.session_state.get("track_filter") != track_filter
     ):
-        if out_path.exists():
-            st.session_state.qa_items = _load_items(out_path, track_filter=track_filter)
-        else:
-            st.session_state.qa_items = _load_items(input_path, track_filter=track_filter)
+        source_items = _load_items(input_path, track_filter="all")
+        if out_path.exists() and out_path.resolve() != input_path.resolve():
+            reviewed_items = _load_items(out_path, track_filter="all")
+            source_items = _merge_reviewed_items(source_items, reviewed_items)
+        st.session_state.qa_items_all = source_items
         st.session_state.rv_idx = 0
         st.session_state.track_filter = track_filter
 
-    items: list[QAItem] = st.session_state.qa_items
+    all_items: list[QAItem] = st.session_state.qa_items_all
+    items = _filter_items_by_track(all_items, track_filter)
     track_label_text = {
         "all":     "[全track]",
         "general": "[general (25観点)]",
@@ -449,26 +610,32 @@ def main() -> None:
         show_header=True,
         track_label=track_label_text,
         input_label=input_label_text,
+        save_items=all_items,
     )
     return
 
 
 def _render_review_body(
     qa: QAItem,
-    items: list[QAItem],
+    full_items: list[QAItem],
+    view: list[QAItem],
     idx: int,
     out_path: Path,
     chunks_dir: str,
     reviewer: str,
     *,
     key_prefix: str = "rv",
+    pending_only: bool = False,
+    on_save: Callable[[QAItem], None] | None = None,
 ) -> None:
     """Per-QA body: identity strip + Q/A + evidence + checklist + actions.
 
-    State keys are namespaced with key_prefix so multiple instances
-    (standalone review_app vs integrated stats tab) don't collide.
+    view はナビ対象の (絞り込み後の) リスト、full_items は保存対象の全件。
+    qa は両方に共有される同一オブジェクトなので、qa を書き換えるだけで
+    full_items にも反映される。State keys are namespaced with key_prefix so
+    multiple instances (standalone review_app vs integrated stats tab) don't collide.
     """
-    total = len(items)
+    total = len(view)
     idx_key = f"{key_prefix}_idx"
 
     # 現在の判定バッジ + ID。主役は質問と回答なので識別情報は1行に抑える
@@ -616,11 +783,16 @@ def _render_review_body(
         qa.answer = answer
         qa.reviewed_by = reviewer
         qa.reviewed_at = now
-        items[idx] = qa
-        _save_items(items, out_path)
+        # qa は full_items 内の同一オブジェクト。書き換えは自動で反映される。
+        if on_save is not None:
+            on_save(qa)
+        else:
+            _save_items(full_items, out_path)
 
     def _advance() -> None:
-        if idx < total - 1:
+        # 未判定のみ表示中は、判定した問いが view から抜けて次が繰り上がるので
+        # idx は据え置き (clamp で末尾も吸収)。全件表示なら通常どおり1つ進む。
+        if not pending_only and idx < total - 1:
             st.session_state[idx_key] = idx + 1
 
     b1, b2, b3 = st.columns(3)

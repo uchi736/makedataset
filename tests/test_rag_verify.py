@@ -123,7 +123,7 @@ def test_retrieval_hits_doc_only_when_wrong_chunk_of_same_doc():
         doc_id="docA",
         text="筐体の塗装色はマンセル N7 とする。",
     )
-    hit_doc, hit_chunk = _retrieval_hits(qa, [other_chunk_same_doc])
+    hit_doc, hit_chunk, _ = _retrieval_hits(qa, [other_chunk_same_doc])
     assert hit_doc is True
     assert hit_chunk is False
 
@@ -139,7 +139,7 @@ def test_retrieval_hits_chunk_match_on_verbatim_text():
         doc_id="docA",
         text="本機の定格電圧はDC24Vであり、許容変動は±10%。",
     )
-    hit_doc, hit_chunk = _retrieval_hits(qa, [right_chunk])
+    hit_doc, hit_chunk, ratio = _retrieval_hits(qa, [right_chunk])
     assert hit_doc is True
     assert hit_chunk is True
 
@@ -159,7 +159,7 @@ def test_retrieval_hits_chunk_match_tolerates_whitespace_reflow():
         doc_id="docA",
         text="定格電圧はDC24Vである。",
     )
-    _, hit_chunk = _retrieval_hits(qa, [right_chunk])
+    _, hit_chunk, _ = _retrieval_hits(qa, [right_chunk])
     assert hit_chunk is True
 
 
@@ -167,7 +167,7 @@ def test_retrieval_hits_empty_rationale_returns_both_false():
     qa = _make_qa_with_rationale_text(rationale_doc="docA", rationale_text="x")
     qa.rationale = []
     chunks, _ = _make_chunks()
-    hit_doc, hit_chunk = _retrieval_hits(qa, chunks)
+    hit_doc, hit_chunk, _ = _retrieval_hits(qa, chunks)
     assert hit_doc is False
     assert hit_chunk is False
 
@@ -200,8 +200,12 @@ def test_retrieve_topk_zero_norm_propagates():
         )
 
 
-def test_rag_verify_qa_zero_norm_yields_no_match():
-    """全0埋め込み → retrieved=[] → answer_match='no_match', retrieval_hit=False。"""
+def test_rag_verify_qa_zero_norm_returns_none_not_no_match():
+    """全0埋め込み (= 検索の障害) は None を返し、no_match として保存しない。
+
+    2026-08-01 変更: 以前は answer_match='no_match' のレコードを作っていたため、
+    埋め込み API の障害が「vector RAG が解けなかった良問 (KG候補)」に化けていた。
+    """
     qa = _make_qa(question="", answer="期待値", rationale_doc="docA")
     chunks, emb = _make_chunks()
 
@@ -217,10 +221,57 @@ def test_rag_verify_qa_zero_norm_yields_no_match():
         llm=_mock_llm_match,
         embed=lambda texts: [[0.0, 0.0, 0.0]],
     )
-    assert result.answer_match == "no_match"
-    assert result.retrieval_hit is False
-    assert result.retrieved_chunk_ids == []
-    assert result.rag_answer == ""
+    assert result is None
+
+
+def test_rag_verify_qa_judge_failure_marks_judge_ok_false():
+    """judge が落ちたときは judge_ok=False。no_match を KG候補として数えないための旗。"""
+    qa = _make_qa(question="Q?", answer="期待値", rationale_doc="docA")
+    chunks, emb = _make_chunks()
+
+    from rageval.prompts import load_prompt
+    from rageval.rag_verify import _split_sections
+    from rageval.llm import LLMError
+    _, body = load_prompt("prompts/rag_verify.md")
+    sections = _split_sections(body)
+
+    def llm_rag_ok_judge_fails(prompt, model, **kw):
+        if model == "mock-judge":
+            raise LLMError("judge down")
+        return '{"answer": "何らかの回答"}'
+
+    result = rag_verify_qa(
+        qa, chunks=chunks, chunk_embeddings=emb, top_k=2,
+        rag_model="mock-rag", judge_model="mock-judge",
+        rag_section=sections["RAG_ANSWER"], judge_section=sections["JUDGE_MATCH"],
+        llm=llm_rag_ok_judge_fails,
+        embed=lambda texts: [[1.0, 0.0, 0.0]],
+    )
+    assert result is not None
+    assert result.judge_ok is False
+    assert result.answer_match == "no_match"  # 既定値のまま (意味のある判定ではない)
+
+
+def test_retrieval_hits_requires_all_rationales():
+    """複数根拠のうち1件しか取得できていなければチャンク一致は偽、ratio は 0.5。"""
+    from rageval.schema import Rationale
+    qa = _make_qa_with_rationale_text(rationale_doc="docA", rationale_text="定格電圧はDC24V")
+    qa.rationale.append(Rationale(doc_id="docB", page=None, text="周囲温度は0〜40℃"))
+    got = Chunk(chunk_id="docA__c0", doc_id="docA", text="本機の定格電圧はDC24Vである。")
+    hit_doc, hit_chunk, ratio = _retrieval_hits(qa, [got])
+    assert hit_doc is True
+    assert hit_chunk is False
+    assert ratio == 0.5
+
+
+def test_retrieval_hits_ignores_cross_doc_coincidence():
+    """doc A の引用が doc B のチャンクに含まれていても一致にしない。"""
+    qa = _make_qa_with_rationale_text(rationale_doc="docA", rationale_text="定格電圧はDC24V")
+    wrong_doc = Chunk(chunk_id="docB__c0", doc_id="docB", text="定格電圧はDC24Vと記載がある。")
+    hit_doc, hit_chunk, ratio = _retrieval_hits(qa, [wrong_doc])
+    assert hit_doc is False
+    assert hit_chunk is False
+    assert ratio == 0.0
 
 
 def test_format_chunks_block_includes_meta():
@@ -525,12 +576,8 @@ def test_rag_verify_batch_writes_field(tmp_path: Path):
     assert out_qa.rag_verification.rag_model == "mock-rag"
 
 
-def test_rag_verify_batch_incremental_flush_preserves_partial_work(tmp_path: Path):
-    """途中で例外が出ても、それまでに処理した QA は out_path に書かれている。
-
-    long-running バッチが Ctrl-C / Azure 全断 / OOM 等で死んでも既処理分が失われない
-    ことを保証する。1問ずつ append する設計の回帰テスト。
-    """
+def test_rag_verify_batch_interruption_preserves_complete_input(tmp_path: Path):
+    """in-place 実行が途中停止しても入力 JSONL は一切変更されない。"""
     chunks_dir = tmp_path / "chunks"
     chunks_dir.mkdir()
     c0 = Chunk(chunk_id="docA__c0", doc_id="docA", text="rationale here")
@@ -544,8 +591,8 @@ def test_rag_verify_batch_incremental_flush_preserves_partial_work(tmp_path: Pat
         qa1.model_dump_json() + "\n" + qa2.model_dump_json() + "\n",
         encoding="utf-8",
     )
+    original = in_path.read_bytes()
 
-    out_path = tmp_path / "out.jsonl"
     emb = np.array([[1.0, 0.0]], dtype=float)
 
     call_count = {"n": 0}
@@ -564,17 +611,10 @@ def test_rag_verify_batch_incremental_flush_preserves_partial_work(tmp_path: Pat
             rag_model="mock-rag", judge_model="mock-judge",
             llm=crashing_llm, embed=lambda t: [[1.0, 0.0]],
             chunk_embeddings=emb,
-            out_path=out_path,
         )
 
-    # qa1 だけ書かれている (qa2 は死んだ時点で未追記)
-    written = [
-        QAItem.model_validate_json(l)
-        for l in out_path.read_text(encoding="utf-8").splitlines() if l
-    ]
-    assert len(written) == 1
-    assert written[0].qa_id == "qa1"
-    assert written[0].rag_verification is not None
+    assert in_path.read_bytes() == original
+    assert not list(tmp_path.glob(f".{in_path.name}.*.tmp"))
 
 
 def test_rag_verify_batch_rejects_row_count_mismatch(tmp_path: Path):
@@ -741,3 +781,193 @@ def test_rag_verify_batch_counts_match_partial_no_match(tmp_path: Path, capsys):
     results = [QAItem.model_validate_json(ln) for ln in lines]
     verdicts = [r.rag_verification.answer_match for r in results]
     assert verdicts == ["match", "partial", "no_match"]
+
+
+# ---------------- v3: 実測ラベル上書き ----------------
+
+def _qa_with_rv(retrieval_level, hit_chunk, hit_doc):
+    from datetime import datetime
+    from rageval.schema import (
+        Explainability, GenerationInfo, QAItem, RAGVerification, Rationale,
+        ReasoningComplexity, RetrievalDifficulty, SourceStructure,
+    )
+    qa = QAItem(
+        qa_id="qa_rv", question="q?", answer="a",
+        rationale=[Rationale(doc_id="d1", page=None, text="t")],
+        category=[], aspect=[], kg_query_type="single_fact", kg_novelty="unknown_term",
+        reasoning_complexity=ReasoningComplexity(), retrieval_difficulty=RetrievalDifficulty(),
+        source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level=retrieval_level, answer_level="Easy", difficulty_rationale="x",
+        generation=GenerationInfo(model="m", prompt_version="v", generated_at=datetime.now()),
+    )
+    qa.rag_verification = RAGVerification(
+        top_k=8, retrieved_chunk_ids=[], retrieval_hit_doc=hit_doc,
+        retrieval_hit_chunk=hit_chunk, retrieval_hit=hit_doc or hit_chunk,
+        rag_answer="x", answer_match="match", rag_model="m", judge_model="j",
+        verified_at=datetime.now(),
+    )
+    return qa
+
+
+def test_measured_label_overrides_declared():
+    from rageval.rag_verify import apply_measured_retrieval_level
+    qa = _qa_with_rv("Hard", hit_chunk=True, hit_doc=True)
+    assert apply_measured_retrieval_level(qa) is True
+    assert qa.retrieval_level == "Easy"
+    assert "実測" in qa.difficulty_rationale
+
+
+def test_measured_label_hard_when_no_hit():
+    from rageval.rag_verify import apply_measured_retrieval_level
+    qa = _qa_with_rv("Easy", hit_chunk=False, hit_doc=False)
+    assert apply_measured_retrieval_level(qa) is True
+    assert qa.retrieval_level == "Hard"
+
+
+def test_measured_label_noop_when_aligned_or_missing():
+    from rageval.rag_verify import apply_measured_retrieval_level
+    qa = _qa_with_rv("Easy", hit_chunk=True, hit_doc=True)
+    assert apply_measured_retrieval_level(qa) is False
+    qa.rag_verification = None
+    assert apply_measured_retrieval_level(qa) is False
+
+
+# ---------- KG 経路 QA の型確定 (検索必要性基準, 2026-08-01) ----------
+
+def _kg_path_qa(retrieved: list[str], query_type: str = "multi_hop"):
+    """kg_path + rag_verification 付きの最小 QA。"""
+    from datetime import datetime
+    from rageval.schema import (
+        KGPathEdgeProvenance, KGPathProvenance, QAItem, RAGVerification, Rationale,
+    )
+    now = datetime.now()
+    return QAItem(
+        qa_id="t", question="Q?", answer="A",
+        rationale=[
+            Rationale(doc_id="a", chunk_id="a__c0001", page=None, text="t1"),
+            Rationale(doc_id="b", chunk_id="b__c0002", page=None, text="t2"),
+        ],
+        reasoning_complexity={}, retrieval_difficulty={}, source_structure={},
+        explainability={"evidence_strictness": "multi-ref"},
+        retrieval_level="Hard", answer_level="Medium", difficulty_rationale="",
+        kg_query_type=query_type,
+        kg_path=KGPathProvenance(
+            snapshot_id="s", path_text="A -[R]-> B -[R]-> C",
+            edges=[
+                KGPathEdgeProvenance(subject="A", predicate="R", object="B",
+                                     source_chunk_id="a__c0001", verification_reason="x"),
+                KGPathEdgeProvenance(subject="B", predicate="R", object="C",
+                                     source_chunk_id="b__c0002", verification_reason="x"),
+            ],
+            verifier_model="j", verified_at=now,
+        ),
+        rag_verification=RAGVerification(
+            top_k=8, retrieved_chunk_ids=retrieved, rag_answer="x",
+            answer_match="match", rag_model="m", judge_model="j", verified_at=now,
+        ),
+        generation={"model": "m", "prompt_version": "v",
+                    "generated_at": now.isoformat()},
+    )
+
+
+def test_sync_kg_type_demotes_when_terminal_directly_retrieved():
+    """終端チャンクが top-k に直接入る → 経路不要 → single_fact。"""
+    from rageval.rag_verify import sync_kg_query_type_from_retrieval
+    qa = _kg_path_qa(retrieved=["b__c0002", "x__c0009"])
+    assert sync_kg_query_type_from_retrieval(qa) is True
+    assert qa.kg_query_type == "single_fact"
+
+
+def test_sync_kg_type_restores_multi_hop_when_terminal_not_retrieved():
+    """回帰: LOO に誤降格された連鎖問が、終端 ∉ top-k なら multi_hop に戻ること。"""
+    from rageval.rag_verify import sync_kg_query_type_from_retrieval
+    qa = _kg_path_qa(retrieved=["x__c0009"], query_type="single_fact")
+    assert sync_kg_query_type_from_retrieval(qa) is True
+    assert qa.kg_query_type == "multi_hop"
+    assert "型確定" in qa.difficulty_rationale
+
+
+def test_sync_kg_type_noop_without_kg_path():
+    from rageval.rag_verify import sync_kg_query_type_from_retrieval
+    qa = _kg_path_qa(retrieved=["x__c0009"])
+    qa.kg_path = None
+    assert sync_kg_query_type_from_retrieval(qa) is False
+
+
+def test_loo_demotion_skips_kg_path_items():
+    """回帰: LOO は kg_path 付き QA を降格しない (連鎖型の系統的誤降格の防止)。"""
+    from datetime import datetime
+    from rageval.answer_grounding import demote_if_not_required
+    from rageval.schema import AnswerGrounding
+    qa = _kg_path_qa(retrieved=[])
+    qa.answer_grounding = AnswerGrounding(
+        per_doc_sufficient={"a__c0001": True, "b__c0002": False},
+        judge_model="j", verified_at=datetime.now(),
+    )
+    assert demote_if_not_required(qa) is False
+    assert qa.kg_query_type == "multi_hop"
+
+
+# ---------- ハイブリッド検索 (BM25 + RRF, 2026-08-02) ----------
+
+def test_bm25_ranks_lexical_match_first():
+    """条番号・専門語の逐語一致が密ベクトル無しで拾えること。"""
+    import numpy as np
+    from rageval.rag_verify import BM25Index, _retrieve_topk
+    from rageval.schema import Chunk
+    chunks = [
+        Chunk(chunk_id="a__c0000", doc_id="a", text="ボイラーの一般的な安全管理について定める。"),
+        Chunk(chunk_id="a__c0001", doc_id="a", text="第百一条 溶接検査は JIS Z 3104 に従い行う。"),
+        Chunk(chunk_id="a__c0002", doc_id="a", text="容器の再検査期間は経過年数による。"),
+    ]
+    idx = BM25Index(chunks)
+    scores = idx.scores("JIS Z 3104 の溶接検査")
+    assert scores.argmax() == 1
+
+    # 密ベクトルが役に立たない (全チャンク同一ベクトル) 状況でも、
+    # ハイブリッドなら語彙一致側が効いて第2チャンクが top に来る
+    emb = np.ones((3, 4)) / 2.0
+    got = _retrieve_topk("JIS Z 3104 の溶接検査", chunks, emb, 2,
+                         embed=lambda xs: [[0.5, 0.5, 0.5, 0.5]], bm25=idx)
+    assert got[0].chunk_id == "a__c0001"
+
+
+def test_retrieval_mode_recorded():
+    from datetime import datetime
+    from rageval.schema import RAGVerification
+    rv = RAGVerification(
+        top_k=8, retrieved_chunk_ids=[], rag_answer="", answer_match="no_match",
+        rag_model="m", judge_model="j", verified_at=datetime.now(),
+    )
+    assert rv.retrieval_mode == "dense"   # 旧データの既定
+
+
+def test_sync_kg_type_preserves_traceability():
+    """回帰: sync が traceability を multi_hop/single_fact に relabel しないこと。"""
+    from rageval.rag_verify import sync_kg_query_type_from_retrieval
+    qa = _kg_path_qa(retrieved=["b__c0002"], query_type="traceability")
+    assert sync_kg_query_type_from_retrieval(qa) is False
+    assert qa.kg_query_type == "traceability"
+
+
+def test_two_stage_retrieval_reranker_reorders_pool():
+    """2段検索: RRF プールを交差エンコーダの点数で並べ直して top_k に選抜。"""
+    import numpy as np
+    from rageval.rag_verify import BM25Index, _retrieve_topk
+    from rageval.schema import Chunk
+    chunks = [Chunk(chunk_id=f"a__c{i:04d}", doc_id="a", text=t) for i, t in enumerate([
+        "ボイラーの一般的な管理について定める。",
+        "第百一条 溶接検査は JIS Z 3104 に従い行う。",
+        "容器の再検査期間は経過年数による。",
+    ])]
+    emb = np.eye(3, 4)[:, :4]
+    emb = np.ones((3, 4)) / 2.0
+    idx = BM25Index(chunks)
+    # リランカーは3番目 (index 2) を最上位にする
+    def fake_rerank(query, docs):
+        return [0.1, 0.2, 0.9][:len(docs)]
+    got = _retrieve_topk("検査", chunks, emb, 1,
+                         embed=lambda xs: [[0.5, 0.5, 0.5, 0.5]],
+                         bm25=idx, reranker=fake_rerank, fetch_k=3)
+    assert got[0].chunk_id == "a__c0002"

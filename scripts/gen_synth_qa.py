@@ -5,7 +5,7 @@
 問い・答え・根拠のすべてが構造的に正しいことが保証される。
 rationale.text はチャンク全文の逐語引用。
 
-出力: data/dataset_kg_synth_v1.jsonl
+出力: data/kg_synth_v1/dataset_kg_synth_v1.jsonl
 
 実行: uv run python scripts/gen_synth_qa.py
 """
@@ -344,7 +344,8 @@ for q, ans, doc, needle in SINGLES:
 
 
 def main():
-    out = Path("data/dataset_kg_synth_v1.jsonl")
+    out = Path("data/kg_synth_v1/dataset_kg_synth_v1.jsonl")
+    out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         for qa in QAS:
             f.write(json.dumps(qa, ensure_ascii=False) + "\n")

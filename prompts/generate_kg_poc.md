@@ -1,6 +1,6 @@
 ---
-prompt_version: kg_poc_v2.0
-description: KG-RAG PoC 評価用 QA 生成プロンプト (v1.9 + ★leave-one-out 強制ルールを最上位条件に追加。「片方の rationale を伏せたら answer の固有値が決まらない」を必須化。様式デコイ・ペルソナ装飾・巨大リスト・断片の 4 不良型を実例で禁止)
+prompt_version: kg_poc_v2.1
+description: KG-RAG PoC 評価用 QA 生成プロンプト (v2.0 + ★接続根拠の手渡し。選定時に機械確認済みの「2チャンクがなぜ繋がるか」をプロンプトで明示し、connection 欄に接続の一文を書いてから question を書かせる。rationale は接続の両側から必須)
 ---
 
 # 役割
@@ -11,6 +11,8 @@ description: KG-RAG PoC 評価用 QA 生成プロンプト (v1.9 + ★leave-one-
 複数元チャンクが渡された場合は、**それら全てを参照しないと答えられない質問**を作ること。
 
 {anchor_chunks_block}
+
+{anchor_connection_block}
 
 # ★最上位ルール: leave-one-out 必須 (v2.0)
 
@@ -203,8 +205,9 @@ description: KG-RAG PoC 評価用 QA 生成プロンプト (v1.9 + ★leave-one-
 
 ```json
 {{
+  "connection": "<★最初に書く (v2.1)。複数チャンクの場合、上の「接続根拠」を自分の言葉で1文にする。この接続が問いの軸になる。単一チャンクなら空文字>",
   "qa_id": "auto_<8桁ハッシュ>",
-  "question": "<質問文。日本語。曖昧さを避け1問1答>",
+  "question": "<質問文。日本語。曖昧さを避け1問1答。connection に書いた接続を跨がないと答えられない問いにする>",
   "answer": "<簡潔な模範回答。単位・数値は明示>",
   "rationale": [
     {{"doc_id": "<元チャンクの doc_id をそのまま (chunk_id ではない)>", "page": <page or null>, "text": "<該当チャンク内の連続部分文字列>"}}
@@ -244,6 +247,10 @@ description: KG-RAG PoC 評価用 QA 生成プロンプト (v1.9 + ★leave-one-
 2. 質問文に **答えそのもの**(具体的な数値・固有名・ステップ名)を書かないこと。
 3. rationale.text は **チャンク内の連続した部分文字列**であること(改変・要約しない)。
 4. **複数元チャンクが与えられた場合**、rationale には参照した各チャンクから引用を入れる(2チャンクなら rationale も2件)。
+   **★v2.1: 「接続根拠」ブロックが渡された場合、これは省略不可の絶対条件**。片方のチャンクだけから
+   rationale を組んだ出力は後段で機械的に破棄される。接続根拠に沿った問いが書けない場合のみ、
+   接続と無関係な問いをでっち上げず、諦めて片方のチャンク内で完結する single_fact 相当の問いに切り替えてよい
+   (その場合 rationale は1件でよい)。
 5. kg_query_type / kg_novelty は **指定された値だけ**を含むこと(勝手に変えない)。
    `aspect` と `category` は **空配列 `[]` のままにする**(KG-PoC track では使わない)。
 6. `unknown_relation` を指定された場合: 「LLMが事前学習だけでは結びつけられない関係」を意図的に作る。汎用知識で答えられる質問は不可。

@@ -517,3 +517,42 @@ def test_generate_batch_with_mock_llm(tmp_path: Path, monkeypatch):
         assert qa.business_scenario
         # Confirm prompt was assembled with anchor_chunks_block
         assert "anchors=" in qa.answer
+
+
+# ---------------- v2.1: 接続根拠ブロック ----------------
+
+def _mk_chunk_v21(doc, pos, text, refs=None, sect=None):
+    from rageval.schema import Chunk
+    return Chunk(chunk_id=f"{doc}__c{pos:04d}", doc_id=doc, page=None, text=text,
+                 position=pos, section_path=sect or [], references=refs or [])
+
+
+def test_describe_join_ledger_and_standard_and_alias():
+    from rageval.sampling import CrossDocPolicy
+    a = _mk_chunk_v21("law_a", 0, "JIS B 1083 に従う", refs=["JIS B 1083"])
+    b = _mk_chunk_v21("law_b", 0, "JIS B 1083 第3表", refs=["JIS B 1083"])
+    assert "規格" in CrossDocPolicy().describe_join(a, b)
+    c = _mk_chunk_v21("law_c", 0, "ボイラー則第百一条に掲げる者")
+    d = _mk_chunk_v21("boiler", 0, "第百一条 一級ボイラー技士…")
+    pol = CrossDocPolicy(doc_aliases={"boiler": ["ボイラー則"]})
+    assert "名指し" in pol.describe_join(c, d)
+    pol2 = CrossDocPolicy(allowed_chunk_pairs={frozenset((a.chunk_id, d.chunk_id))})
+    assert "台帳" in pol2.describe_join(a, d)
+    assert CrossDocPolicy().describe_join(c, d) is None  # 根拠なしは None
+
+
+def test_connection_block_rendered(monkeypatch):
+    import rageval.sampling as sampling
+    from rageval.generate import _format_connection_block
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY",
+                        sampling.CrossDocPolicy(doc_aliases={"boiler": ["ボイラー則"]}))
+    a = _mk_chunk_v21("law_c", 0, "ボイラー則第百一条に掲げる者", refs=["第101条"])
+    b = _mk_chunk_v21("boiler", 0, "第百一条 一級ボイラー技士…")
+    block = _format_connection_block([a, b])
+    assert "接続根拠" in block and "名指し" in block and "connection" in block
+    # 同一文書の遠隔参照
+    c1 = _mk_chunk_v21("d", 0, "第100条の規定を準用する", refs=["第100条"])
+    c2 = _mk_chunk_v21("d", 20, "第100条 省令第63条に…")
+    block2 = _format_connection_block([c1, c2])
+    assert "同一文書内の遠隔参照" in block2 and "第100条" in block2
+    assert _format_connection_block([c1]) == ""

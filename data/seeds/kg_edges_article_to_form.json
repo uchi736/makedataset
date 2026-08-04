@@ -1,0 +1,5943 @@
+{
+ "description": "条文→様式のピンポイント注入用エッジ index。検索チャンクに条文番号を検出したら、article_to_forms[doc_id::第N条] で該当様式行のみを注入する",
+ "built_from": "data/chunks_plant (決定論・LLM不要)",
+ "edge_count": 354,
+ "edges": [
+  {
+   "form": "様式第1号の4",
+   "articles": [
+    "第4条"
+   ],
+   "relation_text": "様式第1号の4（第4条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0061"
+  },
+  {
+   "form": "様式第8号",
+   "articles": [
+    "第10条"
+   ],
+   "relation_text": "様式第8号（第10条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0061"
+  },
+  {
+   "form": "様式第1号",
+   "articles": [
+    "第3条",
+    "第49条"
+   ],
+   "relation_text": "様式第1号（第3条、第49条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第1号の2",
+   "articles": [
+    "第3条の2",
+    "第49条の2"
+   ],
+   "relation_text": "様式第1号の2（第3条の2、第49条の2関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第1号の3",
+   "articles": [
+    "第3条の2",
+    "第49条の2"
+   ],
+   "relation_text": "様式第1号の3（第3条の2、第49条の2関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第2号",
+   "articles": [
+    "第5条",
+    "第51条"
+   ],
+   "relation_text": "様式第2号（第5条、第51条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第3号",
+   "articles": [
+    "第5条",
+    "第10条",
+    "第12条"
+   ],
+   "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第3号",
+   "articles": [
+    "第5条",
+    "第10条",
+    "第12条"
+   ],
+   "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第3号",
+   "articles": [
+    "第5条",
+    "第10条",
+    "第12条"
+   ],
+   "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第4号",
+   "articles": [
+    "第5条",
+    "第12条",
+    "第51条",
+    "第57条"
+   ],
+   "relation_text": "様式第4号（第5条、第12条、第51条、第57条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第6号",
+   "articles": [
+    "第5条",
+    "第11条",
+    "第12条",
+    "第15条",
+    "第51条",
+    "第56条の2",
+    "第57条",
+    "第60条"
+   ],
+   "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第6号",
+   "articles": [
+    "第5条",
+    "第11条",
+    "第12条",
+    "第15条",
+    "第51条",
+    "第56条の2",
+    "第57条",
+    "第60条"
+   ],
+   "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第7号",
+   "articles": [
+    "第7条",
+    "第53条"
+   ],
+   "relation_text": "様式第7号（第7条、第53条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第8号",
+   "articles": [
+    "第7条",
+    "第53条"
+   ],
+   "relation_text": "様式第8号（第7条、第53条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第9号",
+   "articles": [
+    "第7条",
+    "第53条"
+   ],
+   "relation_text": "様式第9号（第7条、第53条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第11号",
+   "articles": [
+    "第10条"
+   ],
+   "relation_text": "様式第11号（第10条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第12号",
+   "articles": [
+    "第11条"
+   ],
+   "relation_text": "様式第12号（第11条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第13号",
+   "articles": [
+    "第12条",
+    "第57条"
+   ],
+   "relation_text": "様式第13号（第12条、第57条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第15号",
+   "articles": [
+    "第14条",
+    "第59条"
+   ],
+   "relation_text": "様式第15号（第14条、第59条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第16号",
+   "articles": [
+    "第15条",
+    "第44条",
+    "第60条",
+    "第79条"
+   ],
+   "relation_text": "様式第16号（第15条、第44条、第60条、第79条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第17号",
+   "articles": [
+    "第25条"
+   ],
+   "relation_text": "様式第17号（第25条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第19号",
+   "articles": [
+    "第39条",
+    "第74条"
+   ],
+   "relation_text": "様式第19号（第39条、第74条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第20号",
+   "articles": [
+    "第41条",
+    "第76条"
+   ],
+   "relation_text": "様式第20号（第41条、第76条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第21号",
+   "articles": [
+    "第42条",
+    "第77条"
+   ],
+   "relation_text": "様式第21号（第42条、第77条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第22号",
+   "articles": [
+    "第46条",
+    "第81条"
+   ],
+   "relation_text": "様式第22号（第46条、第81条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第23号",
+   "articles": [
+    "第51条",
+    "第56条",
+    "第56条の2",
+    "第57条"
+   ],
+   "relation_text": "様式第23号（第51条、第56条、第56条の2、第57条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第24号",
+   "articles": [
+    "第56条"
+   ],
+   "relation_text": "様式第24号（第56条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第25号",
+   "articles": [
+    "第56条の2"
+   ],
+   "relation_text": "様式第25号（第56条の2条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第26号",
+   "articles": [
+    "第91条"
+   ],
+   "relation_text": "様式第26号（第91条関係）",
+   "doc_id": "02_boiler_anzen",
+   "chunk_id": "02_boiler_anzen__c0078"
+  },
+  {
+   "form": "様式第1",
+   "articles": [
+    "第3条"
+   ],
+   "relation_text": "様式第1（第3条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第2",
+   "articles": [
+    "第4条"
+   ],
+   "relation_text": "様式第2（第4条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第3",
+   "articles": [
+    "第9条"
+   ],
+   "relation_text": "様式第3（第9条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第3の2",
+   "articles": [
+    "第9条の2"
+   ],
+   "relation_text": "様式第3の2（第9条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第4",
+   "articles": [
+    "第14条"
+   ],
+   "relation_text": "様式第4（第14条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第5",
+   "articles": [
+    "第15条"
+   ],
+   "relation_text": "様式第5（第15条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第6",
+   "articles": [
+    "第16条"
+   ],
+   "relation_text": "様式第6（第16条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第7",
+   "articles": [
+    "第20条"
+   ],
+   "relation_text": "様式第7（第20条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第8",
+   "articles": [
+    "第24条"
+   ],
+   "relation_text": "様式第8（第24条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第9",
+   "articles": [
+    "第25条"
+   ],
+   "relation_text": "様式第9（第25条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第10",
+   "articles": [
+    "第27条"
+   ],
+   "relation_text": "様式第10（第27条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第11",
+   "articles": [
+    "第28条"
+   ],
+   "relation_text": "様式第11（第28条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第12",
+   "articles": [
+    "第29条"
+   ],
+   "relation_text": "様式第12（第29条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第13",
+   "articles": [
+    "第31条",
+    "第32条"
+   ],
+   "relation_text": "様式第13（第31条、第32条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第14",
+   "articles": [
+    "第31条",
+    "第32条"
+   ],
+   "relation_text": "様式第14（第31条、第32条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第15",
+   "articles": [
+    "第31条"
+   ],
+   "relation_text": "様式第15（第31条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第16",
+   "articles": [
+    "第31条"
+   ],
+   "relation_text": "様式第16（第31条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第17",
+   "articles": [
+    "第32条"
+   ],
+   "relation_text": "様式第17（第32条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第18",
+   "articles": [
+    "第32条"
+   ],
+   "relation_text": "様式第18（第32条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第19",
+   "articles": [
+    "第34条"
+   ],
+   "relation_text": "様式第19（第34条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第20",
+   "articles": [
+    "第34条"
+   ],
+   "relation_text": "様式第20（第34条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第21",
+   "articles": [
+    "第37条"
+   ],
+   "relation_text": "様式第21（第37条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第21の2",
+   "articles": [
+    "第37条の2"
+   ],
+   "relation_text": "様式第21の2（第37条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第22",
+   "articles": [
+    "第41条"
+   ],
+   "relation_text": "様式第22（第41条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第23",
+   "articles": [
+    "第42条"
+   ],
+   "relation_text": "様式第23（第42条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0306"
+  },
+  {
+   "form": "様式第22",
+   "articles": [
+    "第41条"
+   ],
+   "relation_text": "様式第22（第41条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第23",
+   "articles": [
+    "第42条"
+   ],
+   "relation_text": "様式第23（第42条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第24",
+   "articles": [
+    "第42条"
+   ],
+   "relation_text": "様式第24（第42条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第25",
+   "articles": [
+    "第43条"
+   ],
+   "relation_text": "様式第25（第43条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第26",
+   "articles": [
+    "第44条"
+   ],
+   "relation_text": "様式第26（第44条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第27",
+   "articles": [
+    "第45条"
+   ],
+   "relation_text": "様式第27（第45条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第27の2",
+   "articles": [
+    "第45条"
+   ],
+   "relation_text": "様式第27の2（第45条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第28",
+   "articles": [
+    "第45条"
+   ],
+   "relation_text": "様式第28（第45条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第28の2",
+   "articles": [
+    "第45条の2"
+   ],
+   "relation_text": "様式第28の2（第45条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第28の3",
+   "articles": [
+    "第45条の2"
+   ],
+   "relation_text": "様式第28の3（第45条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第28の4",
+   "articles": [
+    "第46条の2"
+   ],
+   "relation_text": "様式第28の4（第46条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第28の5",
+   "articles": [
+    "第46条の2"
+   ],
+   "relation_text": "様式第28の5（第46条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第29",
+   "articles": [
+    "第53条"
+   ],
+   "relation_text": "様式第29（第53条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第29の2",
+   "articles": [
+    "第54条の2"
+   ],
+   "relation_text": "様式第29の2（第54条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第30",
+   "articles": [
+    "第56条"
+   ],
+   "relation_text": "様式第30（第56条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第31",
+   "articles": [
+    "第58条"
+   ],
+   "relation_text": "様式第31（第58条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第32",
+   "articles": [
+    "第63条"
+   ],
+   "relation_text": "様式第32（第63条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第33",
+   "articles": [
+    "第67条"
+   ],
+   "relation_text": "様式第33（第67条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第33の2",
+   "articles": [
+    "第67条"
+   ],
+   "relation_text": "様式第33の2（第67条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第34",
+   "articles": [
+    "第71条"
+   ],
+   "relation_text": "様式第34（第71条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第35",
+   "articles": [
+    "第74条"
+   ],
+   "relation_text": "様式第35（第74条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第36",
+   "articles": [
+    "第75条"
+   ],
+   "relation_text": "様式第36（第75条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第37",
+   "articles": [
+    "第78条"
+   ],
+   "relation_text": "様式第37（第78条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第37の2",
+   "articles": [
+    "第79条",
+    "第80条"
+   ],
+   "relation_text": "様式第37の2（第79条、第80条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第38",
+   "articles": [
+    "第79条",
+    "第80条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0307"
+  },
+  {
+   "form": "様式第38",
+   "articles": [
+    "第79条",
+    "第80条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第39",
+   "articles": [
+    "第79条",
+    "第80条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第39（第79条、第80条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第40",
+   "articles": [
+    "第80条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第40（第80条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第41",
+   "articles": [
+    "第80条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第41（第80条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第42",
+   "articles": [
+    "第81条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第42（第81条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第43",
+   "articles": [
+    "第81条",
+    "第82条",
+    "第94条の7"
+   ],
+   "relation_text": "様式第43（第81条、第82条、第94条の7の14関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第44",
+   "articles": [
+    "第85条"
+   ],
+   "relation_text": "様式第44（第85条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第45",
+   "articles": [
+    "第86条"
+   ],
+   "relation_text": "様式第45（第86条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第46",
+   "articles": [
+    "第87条"
+   ],
+   "relation_text": "様式第46（第87条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第47",
+   "articles": [
+    "第88条"
+   ],
+   "relation_text": "様式第47（第88条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第48",
+   "articles": [
+    "第89条"
+   ],
+   "relation_text": "様式第48（第89条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第49",
+   "articles": [
+    "第89条"
+   ],
+   "relation_text": "様式第49（第89条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第50",
+   "articles": [
+    "第89条"
+   ],
+   "relation_text": "様式第50（第89条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第51",
+   "articles": [
+    "第89条"
+   ],
+   "relation_text": "様式第51（第89条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第52",
+   "articles": [
+    "第91条"
+   ],
+   "relation_text": "様式第52（第91条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第53",
+   "articles": [
+    "第91条"
+   ],
+   "relation_text": "様式第53（第91条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第54",
+   "articles": [
+    "第94条"
+   ],
+   "relation_text": "様式第54（第94条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第55",
+   "articles": [
+    "第94条"
+   ],
+   "relation_text": "様式第55（第94条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第55の2",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第55の2（第94条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第55の3",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第55の3（第94条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第55の4",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第55の4（第94条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0308"
+  },
+  {
+   "form": "様式第55の3",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第55の3（第94条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の4",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第55の4（第94条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の5",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第55の5（第94条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の6",
+   "articles": [
+    "第94条の5"
+   ],
+   "relation_text": "様式第55の6（第94条の5関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の7",
+   "articles": [
+    "第94条の5"
+   ],
+   "relation_text": "様式第55の7（第94条の5関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の8",
+   "articles": [
+    "第94条の8"
+   ],
+   "relation_text": "様式第55の8（第94条の8関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の9",
+   "articles": [
+    "第94条の10"
+   ],
+   "relation_text": "様式第55の9（第94条の10関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の10",
+   "articles": [
+    "第94条の11"
+   ],
+   "relation_text": "様式第55の10（第94条の11関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の11",
+   "articles": [
+    "第94条の14"
+   ],
+   "relation_text": "様式第55の11（第94条の14の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第55の12",
+   "articles": [
+    "第94条の14"
+   ],
+   "relation_text": "様式第55の12（第94条の14の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0309"
+  },
+  {
+   "form": "様式第56",
+   "articles": [
+    "第96条"
+   ],
+   "relation_text": "様式第56（第96条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0310"
+  },
+  {
+   "form": "様式第57",
+   "articles": [
+    "第97条"
+   ],
+   "relation_text": "様式第57（第97条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0310"
+  },
+  {
+   "form": "様式第58",
+   "articles": [
+    "第98条"
+   ],
+   "relation_text": "様式第58（第98条関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0310"
+  },
+  {
+   "form": "様式第59",
+   "articles": [
+    "第98条の2"
+   ],
+   "relation_text": "様式第59（第98条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0310"
+  },
+  {
+   "form": "様式第60",
+   "articles": [
+    "第98条の2"
+   ],
+   "relation_text": "様式第60（第98条の2関係）",
+   "doc_id": "11_ippan_kisoku",
+   "chunk_id": "11_ippan_kisoku__c0310"
+  },
+  {
+   "form": "様式第1",
+   "articles": [
+    "第4条"
+   ],
+   "relation_text": "様式第1（第4条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第2",
+   "articles": [
+    "第9条"
+   ],
+   "relation_text": "様式第2（第9条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第3",
+   "articles": [
+    "第14条"
+   ],
+   "relation_text": "様式第3（第14条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第4",
+   "articles": [
+    "第23条"
+   ],
+   "relation_text": "様式第4（第23条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第5",
+   "articles": [
+    "第30条"
+   ],
+   "relation_text": "様式第5（第30条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第6",
+   "articles": [
+    "第31条"
+   ],
+   "relation_text": "様式第6（第31条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第7",
+   "articles": [
+    "第32条"
+   ],
+   "relation_text": "様式第7（第32条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第8",
+   "articles": [
+    "第35条"
+   ],
+   "relation_text": "様式第8（第35条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第9",
+   "articles": [
+    "第39条"
+   ],
+   "relation_text": "様式第9（第39条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第10",
+   "articles": [
+    "第41条"
+   ],
+   "relation_text": "様式第10（第41条第1項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第11",
+   "articles": [
+    "第41条"
+   ],
+   "relation_text": "様式第11（第41条第3項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第12",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第12（第46条第1項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第13",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第13（第46条第2項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第14",
+   "articles": [
+    "第48条"
+   ],
+   "relation_text": "様式第14（第48条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第15",
+   "articles": [
+    "第49条"
+   ],
+   "relation_text": "様式第15（第49条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第16",
+   "articles": [
+    "第51条"
+   ],
+   "relation_text": "様式第16（第51条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第17",
+   "articles": [
+    "第52条"
+   ],
+   "relation_text": "様式第17（第52条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第18",
+   "articles": [
+    "第53条"
+   ],
+   "relation_text": "様式第18（第53条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第19",
+   "articles": [
+    "第54条"
+   ],
+   "relation_text": "様式第19（第54条第1項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第20",
+   "articles": [
+    "第54条"
+   ],
+   "relation_text": "様式第20（第54条第2項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第21",
+   "articles": [
+    "第54条"
+   ],
+   "relation_text": "様式第21（第54条第3項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第22",
+   "articles": [
+    "第55条"
+   ],
+   "relation_text": "様式第22（第55条第1項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第23",
+   "articles": [
+    "第55条"
+   ],
+   "relation_text": "様式第23（第55条第2項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第24",
+   "articles": [
+    "第55条"
+   ],
+   "relation_text": "様式第24（第55条第3項関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第25",
+   "articles": [
+    "第57条"
+   ],
+   "relation_text": "様式第25（第57条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第26",
+   "articles": [
+    "第59条"
+   ],
+   "relation_text": "様式第26（第59条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第27",
+   "articles": [
+    "第60条"
+   ],
+   "relation_text": "様式第27（第60条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第28",
+   "articles": [
+    "第61条"
+   ],
+   "relation_text": "様式第28（第61条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第29",
+   "articles": [
+    "第63条"
+   ],
+   "relation_text": "様式第29（第63条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第30",
+   "articles": [
+    "第65条"
+   ],
+   "relation_text": "様式第30（第65条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第31",
+   "articles": [
+    "第66条"
+   ],
+   "relation_text": "様式第31（第66条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第32",
+   "articles": [
+    "第67条"
+   ],
+   "relation_text": "様式第32（第67条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第33",
+   "articles": [
+    "第69条"
+   ],
+   "relation_text": "様式第33（第69条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第34",
+   "articles": [
+    "第70条"
+   ],
+   "relation_text": "様式第34（第70条関係）",
+   "doc_id": "14_youki_hoan",
+   "chunk_id": "14_youki_hoan__c0099"
+  },
+  {
+   "form": "様式第1",
+   "articles": [
+    "第3条の5"
+   ],
+   "relation_text": "様式第1（第3条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の2",
+   "articles": [
+    "第3条の5"
+   ],
+   "relation_text": "様式第1の2（第3条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の3",
+   "articles": [
+    "第3条の5",
+    "第45条の7"
+   ],
+   "relation_text": "様式第1の3（第3条の5、第45条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の4",
+   "articles": [
+    "第3条の7"
+   ],
+   "relation_text": "様式第1の4（第3条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の5",
+   "articles": [
+    "第3条の8"
+   ],
+   "relation_text": "様式第1の5（第3条の8関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の6",
+   "articles": [
+    "第3条の8"
+   ],
+   "relation_text": "様式第1の6（第3条の8関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の7",
+   "articles": [
+    "第3条の9"
+   ],
+   "relation_text": "様式第1の7（第3条の9関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の8",
+   "articles": [
+    "第3条の10"
+   ],
+   "relation_text": "様式第1の8（第3条の10関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の9",
+   "articles": [
+    "第3条の10"
+   ],
+   "relation_text": "様式第1の9（第3条の10関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の10",
+   "articles": [
+    "第4条"
+   ],
+   "relation_text": "様式第1の10（第4条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0060"
+  },
+  {
+   "form": "様式第1の9",
+   "articles": [
+    "第3条の10"
+   ],
+   "relation_text": "様式第1の9（第3条の10関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第1の10",
+   "articles": [
+    "第4条"
+   ],
+   "relation_text": "様式第1の10（第4条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第2",
+   "articles": [
+    "第4条",
+    "第41条"
+   ],
+   "relation_text": "様式第2（第4条、第41条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第3",
+   "articles": [
+    "第4条",
+    "第6条",
+    "第10条",
+    "第11条",
+    "第15条",
+    "第41条",
+    "第45条の2"
+   ],
+   "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第4",
+   "articles": [
+    "第4条",
+    "第10条",
+    "第11条"
+   ],
+   "relation_text": "様式第4（第4条、第10条、第11条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第5",
+   "articles": [
+    "第5条"
+   ],
+   "relation_text": "様式第5（第5条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第6",
+   "articles": [
+    "第6条"
+   ],
+   "relation_text": "様式第6（第6条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第7",
+   "articles": [
+    "第9条"
+   ],
+   "relation_text": "様式第7（第9条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第8",
+   "articles": [
+    "第9条"
+   ],
+   "relation_text": "様式第8（第9条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第9",
+   "articles": [
+    "第10条"
+   ],
+   "relation_text": "様式第9（第10条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第10",
+   "articles": [
+    "第11条"
+   ],
+   "relation_text": "様式第10（第11条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第11",
+   "articles": [
+    "第11条"
+   ],
+   "relation_text": "様式第11（第11条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第13",
+   "articles": [
+    "第13条"
+   ],
+   "relation_text": "様式第13（第13条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第14",
+   "articles": [
+    "第15条"
+   ],
+   "relation_text": "様式第14（第15条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第15",
+   "articles": [
+    "第16条"
+   ],
+   "relation_text": "様式第15（第16条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第15号の2",
+   "articles": [
+    "第17条の3"
+   ],
+   "relation_text": "様式第15号の2（第17条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第15号の3",
+   "articles": [
+    "第17条の4"
+   ],
+   "relation_text": "様式第15号の3（第17条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第16",
+   "articles": [
+    "第19条"
+   ],
+   "relation_text": "様式第16（第19条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第17",
+   "articles": [
+    "第19条"
+   ],
+   "relation_text": "様式第17（第19条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第18",
+   "articles": [
+    "第20条"
+   ],
+   "relation_text": "様式第18（第20条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第19",
+   "articles": [
+    "第22条"
+   ],
+   "relation_text": "様式第19（第22条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第20",
+   "articles": [
+    "第24条"
+   ],
+   "relation_text": "様式第20（第24条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第21",
+   "articles": [
+    "第27条"
+   ],
+   "relation_text": "様式第21（第27条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第22",
+   "articles": [
+    "第27条"
+   ],
+   "relation_text": "様式第22（第27条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第23",
+   "articles": [
+    "第28条"
+   ],
+   "relation_text": "様式第23（第28条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0061"
+  },
+  {
+   "form": "様式第21",
+   "articles": [
+    "第27条"
+   ],
+   "relation_text": "様式第21（第27条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第22",
+   "articles": [
+    "第27条"
+   ],
+   "relation_text": "様式第22（第27条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第23",
+   "articles": [
+    "第28条"
+   ],
+   "relation_text": "様式第23（第28条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第23の2",
+   "articles": [
+    "第29条の2"
+   ],
+   "relation_text": "様式第23の2（第29条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第24",
+   "articles": [
+    "第31条"
+   ],
+   "relation_text": "様式第24（第31条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第25",
+   "articles": [
+    "第31条"
+   ],
+   "relation_text": "様式第25（第31条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第26",
+   "articles": [
+    "第32条"
+   ],
+   "relation_text": "様式第26（第32条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第26の2",
+   "articles": [
+    "第33条の2"
+   ],
+   "relation_text": "様式第26の2（第33条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第26の3",
+   "articles": [
+    "第33条の16"
+   ],
+   "relation_text": "様式第26の3（第33条の16関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第27",
+   "articles": [
+    "第34条"
+   ],
+   "relation_text": "様式第27（第34条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第28",
+   "articles": [
+    "第35条"
+   ],
+   "relation_text": "様式第28（第35条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第29",
+   "articles": [
+    "第41条"
+   ],
+   "relation_text": "様式第29（第41条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第30",
+   "articles": [
+    "第41条",
+    "第45条"
+   ],
+   "relation_text": "様式第30（第41条、第45条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第31",
+   "articles": [
+    "第44条"
+   ],
+   "relation_text": "様式第31（第44条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第31の2",
+   "articles": [
+    "第44条"
+   ],
+   "relation_text": "様式第31の2（第44条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第31の3",
+   "articles": [
+    "第45条"
+   ],
+   "relation_text": "様式第31の3（第45条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0062"
+  },
+  {
+   "form": "様式第31の4",
+   "articles": [
+    "第45条の2"
+   ],
+   "relation_text": "様式第31の4（第45条の2の28関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の5",
+   "articles": [
+    "第45条の3"
+   ],
+   "relation_text": "様式第31の5（第45条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の6",
+   "articles": [
+    "第45条の4"
+   ],
+   "relation_text": "様式第31の6（第45条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の7",
+   "articles": [
+    "第45条の6"
+   ],
+   "relation_text": "様式第31の7（第45条の6関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の8",
+   "articles": [
+    "第45条の7"
+   ],
+   "relation_text": "様式第31の8（第45条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の9",
+   "articles": [
+    "第45条の7"
+   ],
+   "relation_text": "様式第31の9（第45条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の10",
+   "articles": [
+    "第45条の9"
+   ],
+   "relation_text": "様式第31の10（第45条の9関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の11",
+   "articles": [
+    "第45条の10"
+   ],
+   "relation_text": "様式第31の11（第45条の10関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の12",
+   "articles": [
+    "第45条の10"
+   ],
+   "relation_text": "様式第31の12（第45条の10関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の13",
+   "articles": [
+    "第45条の11"
+   ],
+   "relation_text": "様式第31の13（第45条の11関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の14",
+   "articles": [
+    "第45条の13"
+   ],
+   "relation_text": "様式第31の14（第45条の13関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の15",
+   "articles": [
+    "第45条の14"
+   ],
+   "relation_text": "様式第31の15（第45条の14関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の16",
+   "articles": [
+    "第45条の14"
+   ],
+   "relation_text": "様式第31の16（第45条の14関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0063"
+  },
+  {
+   "form": "様式第31の15",
+   "articles": [
+    "第45条の14"
+   ],
+   "relation_text": "様式第31の15（第45条の14関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の16",
+   "articles": [
+    "第45条の14"
+   ],
+   "relation_text": "様式第31の16（第45条の14関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の17",
+   "articles": [
+    "第45条の19"
+   ],
+   "relation_text": "様式第31の17（第45条の19関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の18",
+   "articles": [
+    "第45条の19"
+   ],
+   "relation_text": "様式第31の18（第45条の19関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の19",
+   "articles": [
+    "第45条の20"
+   ],
+   "relation_text": "様式第31の19（第45条の20関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の20",
+   "articles": [
+    "第45条の21"
+   ],
+   "relation_text": "様式第31の20（第45条の21関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の21",
+   "articles": [
+    "第45条の21"
+   ],
+   "relation_text": "様式第31の21（第45条の21関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0064"
+  },
+  {
+   "form": "様式第31の22",
+   "articles": [
+    "第45条の23"
+   ],
+   "relation_text": "様式第31の22（第45条の23関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の23",
+   "articles": [
+    "第45条の25"
+   ],
+   "relation_text": "様式第31の23（第45条の25関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の24",
+   "articles": [
+    "第45条の26"
+   ],
+   "relation_text": "様式第31の24（第45条の26関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の25",
+   "articles": [
+    "第45条の28"
+   ],
+   "relation_text": "様式第31の25（第45条の28関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の26",
+   "articles": [
+    "第45条の28"
+   ],
+   "relation_text": "様式第31の26（第45条の28関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の27",
+   "articles": [
+    "第45条の28"
+   ],
+   "relation_text": "様式第31の27（第45条の28関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の28",
+   "articles": [
+    "第45条の28"
+   ],
+   "relation_text": "様式第31の28（第45条の28関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第31の29",
+   "articles": [
+    "第45条の30"
+   ],
+   "relation_text": "様式第31の29（第45条の30第1項関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0065"
+  },
+  {
+   "form": "様式第32",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第32（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第33の2",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第33の2（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第35",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第35（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第37",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第37（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第38",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第38（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第38の2",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第38の2（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第39",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第39（第46条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第39の2",
+   "articles": [
+    "第47条の2"
+   ],
+   "relation_text": "様式第39の2（第47条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第39の3",
+   "articles": [
+    "第47条の2"
+   ],
+   "relation_text": "様式第39の3（第47条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第40",
+   "articles": [
+    "第47条の8"
+   ],
+   "relation_text": "様式第40（第47条の8関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0066"
+  },
+  {
+   "form": "様式第39の2",
+   "articles": [
+    "第47条の2"
+   ],
+   "relation_text": "様式第39の2（第47条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第39の3",
+   "articles": [
+    "第47条の2"
+   ],
+   "relation_text": "様式第39の3（第47条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第40",
+   "articles": [
+    "第47条の8"
+   ],
+   "relation_text": "様式第40（第47条の8関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第40の2",
+   "articles": [
+    "第47条の9"
+   ],
+   "relation_text": "様式第40の2（第47条の9関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第41",
+   "articles": [
+    "第51条"
+   ],
+   "relation_text": "様式第41（第51条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第42",
+   "articles": [
+    "第51条"
+   ],
+   "relation_text": "様式第42（第51条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第43",
+   "articles": [
+    "第53条"
+   ],
+   "relation_text": "様式第43（第53条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第44",
+   "articles": [
+    "第53条の2"
+   ],
+   "relation_text": "様式第44（第53条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第45",
+   "articles": [
+    "第54条"
+   ],
+   "relation_text": "様式第45（第54条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第46",
+   "articles": [
+    "第55条"
+   ],
+   "relation_text": "様式第46（第55条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第46の2",
+   "articles": [
+    "第57条"
+   ],
+   "relation_text": "様式第46の2（第57条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第46の3",
+   "articles": [
+    "第61条の4"
+   ],
+   "relation_text": "様式第46の3（第61条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第46の4",
+   "articles": [
+    "第61条の6"
+   ],
+   "relation_text": "様式第46の4（第61条の6関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第46の5",
+   "articles": [
+    "第61条の7"
+   ],
+   "relation_text": "様式第46の5（第61条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第46の6",
+   "articles": [
+    "第61条の9"
+   ],
+   "relation_text": "様式第46の6（第61条の9関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第47",
+   "articles": [
+    "第63条"
+   ],
+   "relation_text": "様式第47（第63条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第48",
+   "articles": [
+    "第64条"
+   ],
+   "relation_text": "様式第48（第64条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第49",
+   "articles": [
+    "第66条"
+   ],
+   "relation_text": "様式第49（第66条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第49の2",
+   "articles": [
+    "第67条の3"
+   ],
+   "relation_text": "様式第49の2（第67条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第50",
+   "articles": [
+    "第71条"
+   ],
+   "relation_text": "様式第50（第71条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第51",
+   "articles": [
+    "第72条"
+   ],
+   "relation_text": "様式第51（第72条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第52の2",
+   "articles": [
+    "第73条の7"
+   ],
+   "relation_text": "様式第52の2（第73条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0067"
+  },
+  {
+   "form": "様式第51",
+   "articles": [
+    "第72条"
+   ],
+   "relation_text": "様式第51（第72条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第52の2",
+   "articles": [
+    "第73条の7"
+   ],
+   "relation_text": "様式第52の2（第73条の7関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第53",
+   "articles": [
+    "第78条"
+   ],
+   "relation_text": "様式第53（第78条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第60",
+   "articles": [
+    "第88条"
+   ],
+   "relation_text": "様式第60（第88条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第61の2",
+   "articles": [
+    "第94条の2"
+   ],
+   "relation_text": "様式第61の2（第94条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62",
+   "articles": [
+    "第94条の6"
+   ],
+   "relation_text": "様式第62（第94条の6関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62の2",
+   "articles": [
+    "第95条"
+   ],
+   "relation_text": "様式第62の2（第95条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62の3",
+   "articles": [
+    "第95条"
+   ],
+   "relation_text": "様式第62の3（第95条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62の4",
+   "articles": [
+    "第95条"
+   ],
+   "relation_text": "様式第62の4（第95条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62の5",
+   "articles": [
+    "第95条の3"
+   ],
+   "relation_text": "様式第62の5（第95条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62の6",
+   "articles": [
+    "第95条の4"
+   ],
+   "relation_text": "様式第62の6（第95条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第62の7",
+   "articles": [
+    "第95条の6"
+   ],
+   "relation_text": "様式第62の7（第95条の6関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第63",
+   "articles": [
+    "第97条"
+   ],
+   "relation_text": "様式第63（第97条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第63の2",
+   "articles": [
+    "第97条の5"
+   ],
+   "relation_text": "様式第63の2（第97条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第64",
+   "articles": [
+    "第98条"
+   ],
+   "relation_text": "様式第64（第98条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第65",
+   "articles": [
+    "第98条"
+   ],
+   "relation_text": "様式第65（第98条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第66",
+   "articles": [
+    "第99条"
+   ],
+   "relation_text": "様式第66（第99条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第67",
+   "articles": [
+    "第104条"
+   ],
+   "relation_text": "様式第67（第104条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第67の2",
+   "articles": [
+    "第104条の2"
+   ],
+   "relation_text": "様式第67の2（第104条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第67の3",
+   "articles": [
+    "第104条の3"
+   ],
+   "relation_text": "様式第67の3（第104条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第67の4",
+   "articles": [
+    "第104条の4"
+   ],
+   "relation_text": "様式第67の4（第104条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第67の5",
+   "articles": [
+    "第104条の5"
+   ],
+   "relation_text": "様式第67の5（第104条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0068"
+  },
+  {
+   "form": "様式第67の4",
+   "articles": [
+    "第104条の4"
+   ],
+   "relation_text": "様式第67の4（第104条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第67の5",
+   "articles": [
+    "第104条の5"
+   ],
+   "relation_text": "様式第67の5（第104条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第68",
+   "articles": [
+    "第104条の6"
+   ],
+   "relation_text": "様式第68（第104条の6関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第69",
+   "articles": [
+    "第106条"
+   ],
+   "relation_text": "様式第69（第106条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第70",
+   "articles": [
+    "第109条",
+    "第118条の2",
+    "第120条"
+   ],
+   "relation_text": "様式第70（第109条、第118条の2及び第120条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第71",
+   "articles": [
+    "第110条"
+   ],
+   "relation_text": "様式第71（第110条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第72",
+   "articles": [
+    "第110条"
+   ],
+   "relation_text": "様式第72（第110条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第73",
+   "articles": [
+    "第111条"
+   ],
+   "relation_text": "様式第73（第111条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第74",
+   "articles": [
+    "第116条"
+   ],
+   "relation_text": "様式第74（第116条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第75",
+   "articles": [
+    "第118条"
+   ],
+   "relation_text": "様式第75（第118条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第76",
+   "articles": [
+    "第118条"
+   ],
+   "relation_text": "様式第76（第118条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第76の2",
+   "articles": [
+    "第118条の2"
+   ],
+   "relation_text": "様式第76の2（第118条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第77",
+   "articles": [
+    "第119条"
+   ],
+   "relation_text": "様式第77（第119条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78",
+   "articles": [
+    "第122条"
+   ],
+   "relation_text": "様式第78（第122条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78の2",
+   "articles": [
+    "第122条の2"
+   ],
+   "relation_text": "様式第78の2（第122条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78の3",
+   "articles": [
+    "第122条の3"
+   ],
+   "relation_text": "様式第78の3（第122条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78の4",
+   "articles": [
+    "第122条の3"
+   ],
+   "relation_text": "様式第78の4（第122条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78の5",
+   "articles": [
+    "第122条の4"
+   ],
+   "relation_text": "様式第78の5（第122条の4関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78の6",
+   "articles": [
+    "第123条"
+   ],
+   "relation_text": "様式第78の6（第123条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第78の7",
+   "articles": [
+    "第123条"
+   ],
+   "relation_text": "様式第78の7（第123条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第79",
+   "articles": [
+    "第124条"
+   ],
+   "relation_text": "様式第79（第124条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第80",
+   "articles": [
+    "第127条"
+   ],
+   "relation_text": "様式第80（第127条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第83",
+   "articles": [
+    "第130条"
+   ],
+   "relation_text": "様式第83（第130条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0069"
+  },
+  {
+   "form": "様式第80",
+   "articles": [
+    "第127条"
+   ],
+   "relation_text": "様式第80（第127条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83",
+   "articles": [
+    "第130条"
+   ],
+   "relation_text": "様式第83（第130条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の2",
+   "articles": [
+    "第131条"
+   ],
+   "relation_text": "様式第83の2（第131条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の3",
+   "articles": [
+    "第131条"
+   ],
+   "relation_text": "様式第83の3（第131条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の4",
+   "articles": [
+    "第132条の2"
+   ],
+   "relation_text": "様式第83の4（第132条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の5",
+   "articles": [
+    "第132条の3"
+   ],
+   "relation_text": "様式第83の5（第132条の3関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の6",
+   "articles": [
+    "第132条の5"
+   ],
+   "relation_text": "様式第83の6（第132条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の7",
+   "articles": [
+    "第132条の5"
+   ],
+   "relation_text": "様式第83の7（第132条の5関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の8",
+   "articles": [
+    "第132条の9"
+   ],
+   "relation_text": "様式第83の8（第132条の9関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の9",
+   "articles": [
+    "第132条の9"
+   ],
+   "relation_text": "様式第83の9（第132条の9関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の10",
+   "articles": [
+    "第132条の12"
+   ],
+   "relation_text": "様式第83の10（第132条の12関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の11",
+   "articles": [
+    "第132条の13"
+   ],
+   "relation_text": "様式第83の11（第132条の13関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の12",
+   "articles": [
+    "第132条の15"
+   ],
+   "relation_text": "様式第83の12（第132条の15関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の13",
+   "articles": [
+    "第132条の15"
+   ],
+   "relation_text": "様式第83の13（第132条の15関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の14",
+   "articles": [
+    "第132条の15"
+   ],
+   "relation_text": "様式第83の14（第132条の15関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第83の15",
+   "articles": [
+    "第132条の16"
+   ],
+   "relation_text": "様式第83の15（第132条の16関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第84",
+   "articles": [
+    "第133条"
+   ],
+   "relation_text": "様式第84（第133条関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第84の2",
+   "articles": [
+    "第133条の2"
+   ],
+   "relation_text": "様式第84の2（第133条の2関係）",
+   "doc_id": "33_denji_kisoku",
+   "chunk_id": "33_denji_kisoku__c0070"
+  },
+  {
+   "form": "様式第1",
+   "articles": [
+    "第5条"
+   ],
+   "relation_text": "様式第1（第5条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第2",
+   "articles": [
+    "第5条"
+   ],
+   "relation_text": "様式第2（第5条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第3",
+   "articles": [
+    "第46条"
+   ],
+   "relation_text": "様式第3（第46条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第4",
+   "articles": [
+    "第47条",
+    "第48条"
+   ],
+   "relation_text": "様式第4（第47条及び第48条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第5",
+   "articles": [
+    "第49条"
+   ],
+   "relation_text": "様式第5（第49条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第6",
+   "articles": [
+    "第50条"
+   ],
+   "relation_text": "様式第6（第50条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第7",
+   "articles": [
+    "第53条"
+   ],
+   "relation_text": "様式第7（第53条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第8",
+   "articles": [
+    "第54条"
+   ],
+   "relation_text": "様式第8（第54条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第9",
+   "articles": [
+    "第58条"
+   ],
+   "relation_text": "様式第9（第58条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第10",
+   "articles": [
+    "第58条"
+   ],
+   "relation_text": "様式第10（第58条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第11",
+   "articles": [
+    "第63条"
+   ],
+   "relation_text": "様式第11（第63条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第12",
+   "articles": [
+    "第63条"
+   ],
+   "relation_text": "様式第12（第63条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第13",
+   "articles": [
+    "第66条"
+   ],
+   "relation_text": "様式第13（第66条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第14",
+   "articles": [
+    "第67条"
+   ],
+   "relation_text": "様式第14（第67条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第15",
+   "articles": [
+    "第69条"
+   ],
+   "relation_text": "様式第15（第69条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第16",
+   "articles": [
+    "第70条"
+   ],
+   "relation_text": "様式第16（第70条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第17",
+   "articles": [
+    "第72条"
+   ],
+   "relation_text": "様式第17（第72条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第18",
+   "articles": [
+    "第73条"
+   ],
+   "relation_text": "様式第18（第73条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第19",
+   "articles": [
+    "第73条"
+   ],
+   "relation_text": "様式第19（第73条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第20",
+   "articles": [
+    "第73条"
+   ],
+   "relation_text": "様式第20（第73条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第21",
+   "articles": [
+    "第74条"
+   ],
+   "relation_text": "様式第21（第74条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第22",
+   "articles": [
+    "第74条"
+   ],
+   "relation_text": "様式第22（第74条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第23",
+   "articles": [
+    "第74条"
+   ],
+   "relation_text": "様式第23（第74条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第24",
+   "articles": [
+    "第76条"
+   ],
+   "relation_text": "様式第24（第76条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第25",
+   "articles": [
+    "第77条"
+   ],
+   "relation_text": "様式第25（第77条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第26",
+   "articles": [
+    "第78条"
+   ],
+   "relation_text": "様式第26（第78条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第27",
+   "articles": [
+    "第79条"
+   ],
+   "relation_text": "様式第27（第79条関係）",
+   "doc_id": "45_tokutei_setsubi",
+   "chunk_id": "45_tokutei_setsubi__c0045"
+  },
+  {
+   "form": "様式第4号",
+   "articles": [
+    "第5条"
+   ],
+   "relation_text": "様式第4号（第5条関係）",
+   "doc_id": "46_kikai_kentei",
+   "chunk_id": "46_kikai_kentei__c0010"
+  },
+  {
+   "form": "様式第5号",
+   "articles": [
+    "第5条"
+   ],
+   "relation_text": "様式第5号（第5条関係）",
+   "doc_id": "46_kikai_kentei",
+   "chunk_id": "46_kikai_kentei__c0010"
+  },
+  {
+   "form": "様式第7号",
+   "articles": [
+    "第6条"
+   ],
+   "relation_text": "様式第7号（第6条関係）",
+   "doc_id": "46_kikai_kentei",
+   "chunk_id": "46_kikai_kentei__c0010"
+  },
+  {
+   "form": "様式第10号",
+   "articles": [
+    "第12条",
+    "第13条"
+   ],
+   "relation_text": "様式第10号（第12条、第13条関係）",
+   "doc_id": "46_kikai_kentei",
+   "chunk_id": "46_kikai_kentei__c0010"
+  }
+ ],
+ "article_to_forms": {
+  "02_boiler_anzen::第4条": [
+   {
+    "form": "様式第1号の4",
+    "relation_text": "様式第1号の4（第4条関係）",
+    "chunk_id": "02_boiler_anzen__c0061"
+   }
+  ],
+  "02_boiler_anzen::第10条": [
+   {
+    "form": "様式第8号",
+    "relation_text": "様式第8号（第10条関係）",
+    "chunk_id": "02_boiler_anzen__c0061"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第11号",
+    "relation_text": "様式第11号（第10条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第3条": [
+   {
+    "form": "様式第1号",
+    "relation_text": "様式第1号（第3条、第49条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第49条": [
+   {
+    "form": "様式第1号",
+    "relation_text": "様式第1号（第3条、第49条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第3条の2": [
+   {
+    "form": "様式第1号の2",
+    "relation_text": "様式第1号の2（第3条の2、第49条の2関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第1号の3",
+    "relation_text": "様式第1号の3（第3条の2、第49条の2関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第49条の2": [
+   {
+    "form": "様式第1号の2",
+    "relation_text": "様式第1号の2（第3条の2、第49条の2関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第1号の3",
+    "relation_text": "様式第1号の3（第3条の2、第49条の2関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第5条": [
+   {
+    "form": "様式第2号",
+    "relation_text": "様式第2号（第5条、第51条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第4号",
+    "relation_text": "様式第4号（第5条、第12条、第51条、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第51条": [
+   {
+    "form": "様式第2号",
+    "relation_text": "様式第2号（第5条、第51条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第4号",
+    "relation_text": "様式第4号（第5条、第12条、第51条、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第23号",
+    "relation_text": "様式第23号（第51条、第56条、第56条の2、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第12条": [
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第3号",
+    "relation_text": "様式第3号（第5条、第10条―第12条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第4号",
+    "relation_text": "様式第4号（第5条、第12条、第51条、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第13号",
+    "relation_text": "様式第13号（第12条、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第57条": [
+   {
+    "form": "様式第4号",
+    "relation_text": "様式第4号（第5条、第12条、第51条、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第13号",
+    "relation_text": "様式第13号（第12条、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第23号",
+    "relation_text": "様式第23号（第51条、第56条、第56条の2、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第11条": [
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第12号",
+    "relation_text": "様式第12号（第11条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第15条": [
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第16号",
+    "relation_text": "様式第16号（第15条、第44条、第60条、第79条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第56条の2": [
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第23号",
+    "relation_text": "様式第23号（第51条、第56条、第56条の2、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第25号",
+    "relation_text": "様式第25号（第56条の2条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第60条": [
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第6号",
+    "relation_text": "様式第6号（第5条、第11条、第12条、第15条、第51条、第56条の2、第57条、第60条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第16号",
+    "relation_text": "様式第16号（第15条、第44条、第60条、第79条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第7条": [
+   {
+    "form": "様式第7号",
+    "relation_text": "様式第7号（第7条、第53条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第8号",
+    "relation_text": "様式第8号（第7条、第53条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第9号",
+    "relation_text": "様式第9号（第7条、第53条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第53条": [
+   {
+    "form": "様式第7号",
+    "relation_text": "様式第7号（第7条、第53条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第8号",
+    "relation_text": "様式第8号（第7条、第53条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第9号",
+    "relation_text": "様式第9号（第7条、第53条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第14条": [
+   {
+    "form": "様式第15号",
+    "relation_text": "様式第15号（第14条、第59条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第59条": [
+   {
+    "form": "様式第15号",
+    "relation_text": "様式第15号（第14条、第59条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第44条": [
+   {
+    "form": "様式第16号",
+    "relation_text": "様式第16号（第15条、第44条、第60条、第79条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第79条": [
+   {
+    "form": "様式第16号",
+    "relation_text": "様式第16号（第15条、第44条、第60条、第79条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第25条": [
+   {
+    "form": "様式第17号",
+    "relation_text": "様式第17号（第25条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第39条": [
+   {
+    "form": "様式第19号",
+    "relation_text": "様式第19号（第39条、第74条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第74条": [
+   {
+    "form": "様式第19号",
+    "relation_text": "様式第19号（第39条、第74条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第41条": [
+   {
+    "form": "様式第20号",
+    "relation_text": "様式第20号（第41条、第76条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第76条": [
+   {
+    "form": "様式第20号",
+    "relation_text": "様式第20号（第41条、第76条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第42条": [
+   {
+    "form": "様式第21号",
+    "relation_text": "様式第21号（第42条、第77条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第77条": [
+   {
+    "form": "様式第21号",
+    "relation_text": "様式第21号（第42条、第77条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第46条": [
+   {
+    "form": "様式第22号",
+    "relation_text": "様式第22号（第46条、第81条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第81条": [
+   {
+    "form": "様式第22号",
+    "relation_text": "様式第22号（第46条、第81条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第56条": [
+   {
+    "form": "様式第23号",
+    "relation_text": "様式第23号（第51条、第56条、第56条の2、第57条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   },
+   {
+    "form": "様式第24号",
+    "relation_text": "様式第24号（第56条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "02_boiler_anzen::第91条": [
+   {
+    "form": "様式第26号",
+    "relation_text": "様式第26号（第91条関係）",
+    "chunk_id": "02_boiler_anzen__c0078"
+   }
+  ],
+  "11_ippan_kisoku::第3条": [
+   {
+    "form": "様式第1",
+    "relation_text": "様式第1（第3条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第4条": [
+   {
+    "form": "様式第2",
+    "relation_text": "様式第2（第4条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第9条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第9条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第9条の2": [
+   {
+    "form": "様式第3の2",
+    "relation_text": "様式第3の2（第9条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第14条": [
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第14条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第15条": [
+   {
+    "form": "様式第5",
+    "relation_text": "様式第5（第15条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第16条": [
+   {
+    "form": "様式第6",
+    "relation_text": "様式第6（第16条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第20条": [
+   {
+    "form": "様式第7",
+    "relation_text": "様式第7（第20条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第24条": [
+   {
+    "form": "様式第8",
+    "relation_text": "様式第8（第24条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第25条": [
+   {
+    "form": "様式第9",
+    "relation_text": "様式第9（第25条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第27条": [
+   {
+    "form": "様式第10",
+    "relation_text": "様式第10（第27条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第28条": [
+   {
+    "form": "様式第11",
+    "relation_text": "様式第11（第28条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第29条": [
+   {
+    "form": "様式第12",
+    "relation_text": "様式第12（第29条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第31条": [
+   {
+    "form": "様式第13",
+    "relation_text": "様式第13（第31条、第32条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第14",
+    "relation_text": "様式第14（第31条、第32条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第15",
+    "relation_text": "様式第15（第31条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第16",
+    "relation_text": "様式第16（第31条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第32条": [
+   {
+    "form": "様式第13",
+    "relation_text": "様式第13（第31条、第32条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第14",
+    "relation_text": "様式第14（第31条、第32条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第17",
+    "relation_text": "様式第17（第32条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第18",
+    "relation_text": "様式第18（第32条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第34条": [
+   {
+    "form": "様式第19",
+    "relation_text": "様式第19（第34条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第20",
+    "relation_text": "様式第20（第34条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第37条": [
+   {
+    "form": "様式第21",
+    "relation_text": "様式第21（第37条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第37条の2": [
+   {
+    "form": "様式第21の2",
+    "relation_text": "様式第21の2（第37条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   }
+  ],
+  "11_ippan_kisoku::第41条": [
+   {
+    "form": "様式第22",
+    "relation_text": "様式第22（第41条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第22",
+    "relation_text": "様式第22（第41条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第42条": [
+   {
+    "form": "様式第23",
+    "relation_text": "様式第23（第42条関係）",
+    "chunk_id": "11_ippan_kisoku__c0306"
+   },
+   {
+    "form": "様式第23",
+    "relation_text": "様式第23（第42条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第24",
+    "relation_text": "様式第24（第42条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第43条": [
+   {
+    "form": "様式第25",
+    "relation_text": "様式第25（第43条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第44条": [
+   {
+    "form": "様式第26",
+    "relation_text": "様式第26（第44条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第45条": [
+   {
+    "form": "様式第27",
+    "relation_text": "様式第27（第45条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第27の2",
+    "relation_text": "様式第27の2（第45条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第28",
+    "relation_text": "様式第28（第45条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第45条の2": [
+   {
+    "form": "様式第28の2",
+    "relation_text": "様式第28の2（第45条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第28の3",
+    "relation_text": "様式第28の3（第45条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第46条の2": [
+   {
+    "form": "様式第28の4",
+    "relation_text": "様式第28の4（第46条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第28の5",
+    "relation_text": "様式第28の5（第46条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第53条": [
+   {
+    "form": "様式第29",
+    "relation_text": "様式第29（第53条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第54条の2": [
+   {
+    "form": "様式第29の2",
+    "relation_text": "様式第29の2（第54条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第56条": [
+   {
+    "form": "様式第30",
+    "relation_text": "様式第30（第56条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第58条": [
+   {
+    "form": "様式第31",
+    "relation_text": "様式第31（第58条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第63条": [
+   {
+    "form": "様式第32",
+    "relation_text": "様式第32（第63条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第67条": [
+   {
+    "form": "様式第33",
+    "relation_text": "様式第33（第67条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第33の2",
+    "relation_text": "様式第33の2（第67条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第71条": [
+   {
+    "form": "様式第34",
+    "relation_text": "様式第34（第71条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第74条": [
+   {
+    "form": "様式第35",
+    "relation_text": "様式第35（第74条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第75条": [
+   {
+    "form": "様式第36",
+    "relation_text": "様式第36（第75条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第78条": [
+   {
+    "form": "様式第37",
+    "relation_text": "様式第37（第78条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   }
+  ],
+  "11_ippan_kisoku::第79条": [
+   {
+    "form": "様式第37の2",
+    "relation_text": "様式第37の2（第79条、第80条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第39",
+    "relation_text": "様式第39（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第80条": [
+   {
+    "form": "様式第37の2",
+    "relation_text": "様式第37の2（第79条、第80条関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第39",
+    "relation_text": "様式第39（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第40",
+    "relation_text": "様式第40（第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第41",
+    "relation_text": "様式第41（第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第82条": [
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第39",
+    "relation_text": "様式第39（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第40",
+    "relation_text": "様式第40（第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第41",
+    "relation_text": "様式第41（第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第42",
+    "relation_text": "様式第42（第81条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第43",
+    "relation_text": "様式第43（第81条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第94条の7": [
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0307"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第39",
+    "relation_text": "様式第39（第79条、第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第40",
+    "relation_text": "様式第40（第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第41",
+    "relation_text": "様式第41（第80条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第42",
+    "relation_text": "様式第42（第81条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第43",
+    "relation_text": "様式第43（第81条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第81条": [
+   {
+    "form": "様式第42",
+    "relation_text": "様式第42（第81条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第43",
+    "relation_text": "様式第43（第81条、第82条、第94条の7の14関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第85条": [
+   {
+    "form": "様式第44",
+    "relation_text": "様式第44（第85条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第86条": [
+   {
+    "form": "様式第45",
+    "relation_text": "様式第45（第86条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第87条": [
+   {
+    "form": "様式第46",
+    "relation_text": "様式第46（第87条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第88条": [
+   {
+    "form": "様式第47",
+    "relation_text": "様式第47（第88条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第89条": [
+   {
+    "form": "様式第48",
+    "relation_text": "様式第48（第89条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第49",
+    "relation_text": "様式第49（第89条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第50",
+    "relation_text": "様式第50（第89条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第51",
+    "relation_text": "様式第51（第89条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第91条": [
+   {
+    "form": "様式第52",
+    "relation_text": "様式第52（第91条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第53",
+    "relation_text": "様式第53（第91条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第94条": [
+   {
+    "form": "様式第54",
+    "relation_text": "様式第54（第94条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第55",
+    "relation_text": "様式第55（第94条関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   }
+  ],
+  "11_ippan_kisoku::第94条の2": [
+   {
+    "form": "様式第55の2",
+    "relation_text": "様式第55の2（第94条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第55の3",
+    "relation_text": "様式第55の3（第94条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第55の4",
+    "relation_text": "様式第55の4（第94条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0308"
+   },
+   {
+    "form": "様式第55の3",
+    "relation_text": "様式第55の3（第94条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   },
+   {
+    "form": "様式第55の4",
+    "relation_text": "様式第55の4（第94条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   },
+   {
+    "form": "様式第55の5",
+    "relation_text": "様式第55の5（第94条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   }
+  ],
+  "11_ippan_kisoku::第94条の5": [
+   {
+    "form": "様式第55の6",
+    "relation_text": "様式第55の6（第94条の5関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   },
+   {
+    "form": "様式第55の7",
+    "relation_text": "様式第55の7（第94条の5関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   }
+  ],
+  "11_ippan_kisoku::第94条の8": [
+   {
+    "form": "様式第55の8",
+    "relation_text": "様式第55の8（第94条の8関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   }
+  ],
+  "11_ippan_kisoku::第94条の10": [
+   {
+    "form": "様式第55の9",
+    "relation_text": "様式第55の9（第94条の10関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   }
+  ],
+  "11_ippan_kisoku::第94条の11": [
+   {
+    "form": "様式第55の10",
+    "relation_text": "様式第55の10（第94条の11関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   }
+  ],
+  "11_ippan_kisoku::第94条の14": [
+   {
+    "form": "様式第55の11",
+    "relation_text": "様式第55の11（第94条の14の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   },
+   {
+    "form": "様式第55の12",
+    "relation_text": "様式第55の12（第94条の14の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0309"
+   }
+  ],
+  "11_ippan_kisoku::第96条": [
+   {
+    "form": "様式第56",
+    "relation_text": "様式第56（第96条関係）",
+    "chunk_id": "11_ippan_kisoku__c0310"
+   }
+  ],
+  "11_ippan_kisoku::第97条": [
+   {
+    "form": "様式第57",
+    "relation_text": "様式第57（第97条関係）",
+    "chunk_id": "11_ippan_kisoku__c0310"
+   }
+  ],
+  "11_ippan_kisoku::第98条": [
+   {
+    "form": "様式第58",
+    "relation_text": "様式第58（第98条関係）",
+    "chunk_id": "11_ippan_kisoku__c0310"
+   }
+  ],
+  "11_ippan_kisoku::第98条の2": [
+   {
+    "form": "様式第59",
+    "relation_text": "様式第59（第98条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0310"
+   },
+   {
+    "form": "様式第60",
+    "relation_text": "様式第60（第98条の2関係）",
+    "chunk_id": "11_ippan_kisoku__c0310"
+   }
+  ],
+  "14_youki_hoan::第4条": [
+   {
+    "form": "様式第1",
+    "relation_text": "様式第1（第4条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第9条": [
+   {
+    "form": "様式第2",
+    "relation_text": "様式第2（第9条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第14条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第14条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第23条": [
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第23条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第30条": [
+   {
+    "form": "様式第5",
+    "relation_text": "様式第5（第30条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第31条": [
+   {
+    "form": "様式第6",
+    "relation_text": "様式第6（第31条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第32条": [
+   {
+    "form": "様式第7",
+    "relation_text": "様式第7（第32条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第35条": [
+   {
+    "form": "様式第8",
+    "relation_text": "様式第8（第35条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第39条": [
+   {
+    "form": "様式第9",
+    "relation_text": "様式第9（第39条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第41条": [
+   {
+    "form": "様式第10",
+    "relation_text": "様式第10（第41条第1項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   },
+   {
+    "form": "様式第11",
+    "relation_text": "様式第11（第41条第3項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第46条": [
+   {
+    "form": "様式第12",
+    "relation_text": "様式第12（第46条第1項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   },
+   {
+    "form": "様式第13",
+    "relation_text": "様式第13（第46条第2項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第48条": [
+   {
+    "form": "様式第14",
+    "relation_text": "様式第14（第48条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第49条": [
+   {
+    "form": "様式第15",
+    "relation_text": "様式第15（第49条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第51条": [
+   {
+    "form": "様式第16",
+    "relation_text": "様式第16（第51条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第52条": [
+   {
+    "form": "様式第17",
+    "relation_text": "様式第17（第52条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第53条": [
+   {
+    "form": "様式第18",
+    "relation_text": "様式第18（第53条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第54条": [
+   {
+    "form": "様式第19",
+    "relation_text": "様式第19（第54条第1項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   },
+   {
+    "form": "様式第20",
+    "relation_text": "様式第20（第54条第2項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   },
+   {
+    "form": "様式第21",
+    "relation_text": "様式第21（第54条第3項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第55条": [
+   {
+    "form": "様式第22",
+    "relation_text": "様式第22（第55条第1項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   },
+   {
+    "form": "様式第23",
+    "relation_text": "様式第23（第55条第2項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   },
+   {
+    "form": "様式第24",
+    "relation_text": "様式第24（第55条第3項関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第57条": [
+   {
+    "form": "様式第25",
+    "relation_text": "様式第25（第57条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第59条": [
+   {
+    "form": "様式第26",
+    "relation_text": "様式第26（第59条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第60条": [
+   {
+    "form": "様式第27",
+    "relation_text": "様式第27（第60条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第61条": [
+   {
+    "form": "様式第28",
+    "relation_text": "様式第28（第61条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第63条": [
+   {
+    "form": "様式第29",
+    "relation_text": "様式第29（第63条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第65条": [
+   {
+    "form": "様式第30",
+    "relation_text": "様式第30（第65条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第66条": [
+   {
+    "form": "様式第31",
+    "relation_text": "様式第31（第66条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第67条": [
+   {
+    "form": "様式第32",
+    "relation_text": "様式第32（第67条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第69条": [
+   {
+    "form": "様式第33",
+    "relation_text": "様式第33（第69条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "14_youki_hoan::第70条": [
+   {
+    "form": "様式第34",
+    "relation_text": "様式第34（第70条関係）",
+    "chunk_id": "14_youki_hoan__c0099"
+   }
+  ],
+  "33_denji_kisoku::第3条の5": [
+   {
+    "form": "様式第1",
+    "relation_text": "様式第1（第3条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第1の2",
+    "relation_text": "様式第1の2（第3条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第1の3",
+    "relation_text": "様式第1の3（第3条の5、第45条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   }
+  ],
+  "33_denji_kisoku::第45条の7": [
+   {
+    "form": "様式第1の3",
+    "relation_text": "様式第1の3（第3条の5、第45条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第31の8",
+    "relation_text": "様式第31の8（第45条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   },
+   {
+    "form": "様式第31の9",
+    "relation_text": "様式第31の9（第45条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第3条の7": [
+   {
+    "form": "様式第1の4",
+    "relation_text": "様式第1の4（第3条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   }
+  ],
+  "33_denji_kisoku::第3条の8": [
+   {
+    "form": "様式第1の5",
+    "relation_text": "様式第1の5（第3条の8関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第1の6",
+    "relation_text": "様式第1の6（第3条の8関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   }
+  ],
+  "33_denji_kisoku::第3条の9": [
+   {
+    "form": "様式第1の7",
+    "relation_text": "様式第1の7（第3条の9関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   }
+  ],
+  "33_denji_kisoku::第3条の10": [
+   {
+    "form": "様式第1の8",
+    "relation_text": "様式第1の8（第3条の10関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第1の9",
+    "relation_text": "様式第1の9（第3条の10関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第1の9",
+    "relation_text": "様式第1の9（第3条の10関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第4条": [
+   {
+    "form": "様式第1の10",
+    "relation_text": "様式第1の10（第4条関係）",
+    "chunk_id": "33_denji_kisoku__c0060"
+   },
+   {
+    "form": "様式第1の10",
+    "relation_text": "様式第1の10（第4条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第2",
+    "relation_text": "様式第2（第4条、第41条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第4条、第10条、第11条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第41条": [
+   {
+    "form": "様式第2",
+    "relation_text": "様式第2（第4条、第41条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第29",
+    "relation_text": "様式第29（第41条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   },
+   {
+    "form": "様式第30",
+    "relation_text": "様式第30（第41条、第45条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第6条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第6",
+    "relation_text": "様式第6（第6条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第10条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第4条、第10条、第11条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第9",
+    "relation_text": "様式第9（第10条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第11条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第4条、第10条、第11条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第10",
+    "relation_text": "様式第10（第11条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第11",
+    "relation_text": "様式第11（第11条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第15条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第14",
+    "relation_text": "様式第14（第15条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第45条の2": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第4条、第6条、第10条、第11条、第15条、第41条、第45条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第31の4",
+    "relation_text": "様式第31の4（第45条の2の28関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第5条": [
+   {
+    "form": "様式第5",
+    "relation_text": "様式第5（第5条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第9条": [
+   {
+    "form": "様式第7",
+    "relation_text": "様式第7（第9条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第8",
+    "relation_text": "様式第8（第9条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第13条": [
+   {
+    "form": "様式第13",
+    "relation_text": "様式第13（第13条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第16条": [
+   {
+    "form": "様式第15",
+    "relation_text": "様式第15（第16条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第17条の3": [
+   {
+    "form": "様式第15号の2",
+    "relation_text": "様式第15号の2（第17条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第17条の4": [
+   {
+    "form": "様式第15号の3",
+    "relation_text": "様式第15号の3（第17条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第19条": [
+   {
+    "form": "様式第16",
+    "relation_text": "様式第16（第19条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第17",
+    "relation_text": "様式第17（第19条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第20条": [
+   {
+    "form": "様式第18",
+    "relation_text": "様式第18（第20条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第22条": [
+   {
+    "form": "様式第19",
+    "relation_text": "様式第19（第22条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第24条": [
+   {
+    "form": "様式第20",
+    "relation_text": "様式第20（第24条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   }
+  ],
+  "33_denji_kisoku::第27条": [
+   {
+    "form": "様式第21",
+    "relation_text": "様式第21（第27条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第22",
+    "relation_text": "様式第22（第27条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第21",
+    "relation_text": "様式第21（第27条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   },
+   {
+    "form": "様式第22",
+    "relation_text": "様式第22（第27条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第28条": [
+   {
+    "form": "様式第23",
+    "relation_text": "様式第23（第28条関係）",
+    "chunk_id": "33_denji_kisoku__c0061"
+   },
+   {
+    "form": "様式第23",
+    "relation_text": "様式第23（第28条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第29条の2": [
+   {
+    "form": "様式第23の2",
+    "relation_text": "様式第23の2（第29条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第31条": [
+   {
+    "form": "様式第24",
+    "relation_text": "様式第24（第31条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   },
+   {
+    "form": "様式第25",
+    "relation_text": "様式第25（第31条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第32条": [
+   {
+    "form": "様式第26",
+    "relation_text": "様式第26（第32条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第33条の2": [
+   {
+    "form": "様式第26の2",
+    "relation_text": "様式第26の2（第33条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第33条の16": [
+   {
+    "form": "様式第26の3",
+    "relation_text": "様式第26の3（第33条の16関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第34条": [
+   {
+    "form": "様式第27",
+    "relation_text": "様式第27（第34条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第35条": [
+   {
+    "form": "様式第28",
+    "relation_text": "様式第28（第35条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第45条": [
+   {
+    "form": "様式第30",
+    "relation_text": "様式第30（第41条、第45条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   },
+   {
+    "form": "様式第31の3",
+    "relation_text": "様式第31の3（第45条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第44条": [
+   {
+    "form": "様式第31",
+    "relation_text": "様式第31（第44条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   },
+   {
+    "form": "様式第31の2",
+    "relation_text": "様式第31の2（第44条関係）",
+    "chunk_id": "33_denji_kisoku__c0062"
+   }
+  ],
+  "33_denji_kisoku::第45条の3": [
+   {
+    "form": "様式第31の5",
+    "relation_text": "様式第31の5（第45条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の4": [
+   {
+    "form": "様式第31の6",
+    "relation_text": "様式第31の6（第45条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の6": [
+   {
+    "form": "様式第31の7",
+    "relation_text": "様式第31の7（第45条の6関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の9": [
+   {
+    "form": "様式第31の10",
+    "relation_text": "様式第31の10（第45条の9関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の10": [
+   {
+    "form": "様式第31の11",
+    "relation_text": "様式第31の11（第45条の10関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   },
+   {
+    "form": "様式第31の12",
+    "relation_text": "様式第31の12（第45条の10関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の11": [
+   {
+    "form": "様式第31の13",
+    "relation_text": "様式第31の13（第45条の11関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の13": [
+   {
+    "form": "様式第31の14",
+    "relation_text": "様式第31の14（第45条の13関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   }
+  ],
+  "33_denji_kisoku::第45条の14": [
+   {
+    "form": "様式第31の15",
+    "relation_text": "様式第31の15（第45条の14関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   },
+   {
+    "form": "様式第31の16",
+    "relation_text": "様式第31の16（第45条の14関係）",
+    "chunk_id": "33_denji_kisoku__c0063"
+   },
+   {
+    "form": "様式第31の15",
+    "relation_text": "様式第31の15（第45条の14関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   },
+   {
+    "form": "様式第31の16",
+    "relation_text": "様式第31の16（第45条の14関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   }
+  ],
+  "33_denji_kisoku::第45条の19": [
+   {
+    "form": "様式第31の17",
+    "relation_text": "様式第31の17（第45条の19関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   },
+   {
+    "form": "様式第31の18",
+    "relation_text": "様式第31の18（第45条の19関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   }
+  ],
+  "33_denji_kisoku::第45条の20": [
+   {
+    "form": "様式第31の19",
+    "relation_text": "様式第31の19（第45条の20関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   }
+  ],
+  "33_denji_kisoku::第45条の21": [
+   {
+    "form": "様式第31の20",
+    "relation_text": "様式第31の20（第45条の21関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   },
+   {
+    "form": "様式第31の21",
+    "relation_text": "様式第31の21（第45条の21関係）",
+    "chunk_id": "33_denji_kisoku__c0064"
+   }
+  ],
+  "33_denji_kisoku::第45条の23": [
+   {
+    "form": "様式第31の22",
+    "relation_text": "様式第31の22（第45条の23関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   }
+  ],
+  "33_denji_kisoku::第45条の25": [
+   {
+    "form": "様式第31の23",
+    "relation_text": "様式第31の23（第45条の25関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   }
+  ],
+  "33_denji_kisoku::第45条の26": [
+   {
+    "form": "様式第31の24",
+    "relation_text": "様式第31の24（第45条の26関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   }
+  ],
+  "33_denji_kisoku::第45条の28": [
+   {
+    "form": "様式第31の25",
+    "relation_text": "様式第31の25（第45条の28関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   },
+   {
+    "form": "様式第31の26",
+    "relation_text": "様式第31の26（第45条の28関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   },
+   {
+    "form": "様式第31の27",
+    "relation_text": "様式第31の27（第45条の28関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   },
+   {
+    "form": "様式第31の28",
+    "relation_text": "様式第31の28（第45条の28関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   }
+  ],
+  "33_denji_kisoku::第45条の30": [
+   {
+    "form": "様式第31の29",
+    "relation_text": "様式第31の29（第45条の30第1項関係）",
+    "chunk_id": "33_denji_kisoku__c0065"
+   }
+  ],
+  "33_denji_kisoku::第46条": [
+   {
+    "form": "様式第32",
+    "relation_text": "様式第32（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第33の2",
+    "relation_text": "様式第33の2（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第35",
+    "relation_text": "様式第35（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第37",
+    "relation_text": "様式第37（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第38",
+    "relation_text": "様式第38（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第38の2",
+    "relation_text": "様式第38の2（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第39",
+    "relation_text": "様式第39（第46条関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   }
+  ],
+  "33_denji_kisoku::第47条の2": [
+   {
+    "form": "様式第39の2",
+    "relation_text": "様式第39の2（第47条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第39の3",
+    "relation_text": "様式第39の3（第47条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第39の2",
+    "relation_text": "様式第39の2（第47条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   },
+   {
+    "form": "様式第39の3",
+    "relation_text": "様式第39の3（第47条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第47条の8": [
+   {
+    "form": "様式第40",
+    "relation_text": "様式第40（第47条の8関係）",
+    "chunk_id": "33_denji_kisoku__c0066"
+   },
+   {
+    "form": "様式第40",
+    "relation_text": "様式第40（第47条の8関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第47条の9": [
+   {
+    "form": "様式第40の2",
+    "relation_text": "様式第40の2（第47条の9関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第51条": [
+   {
+    "form": "様式第41",
+    "relation_text": "様式第41（第51条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   },
+   {
+    "form": "様式第42",
+    "relation_text": "様式第42（第51条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第53条": [
+   {
+    "form": "様式第43",
+    "relation_text": "様式第43（第53条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第53条の2": [
+   {
+    "form": "様式第44",
+    "relation_text": "様式第44（第53条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第54条": [
+   {
+    "form": "様式第45",
+    "relation_text": "様式第45（第54条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第55条": [
+   {
+    "form": "様式第46",
+    "relation_text": "様式第46（第55条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第57条": [
+   {
+    "form": "様式第46の2",
+    "relation_text": "様式第46の2（第57条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第61条の4": [
+   {
+    "form": "様式第46の3",
+    "relation_text": "様式第46の3（第61条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第61条の6": [
+   {
+    "form": "様式第46の4",
+    "relation_text": "様式第46の4（第61条の6関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第61条の7": [
+   {
+    "form": "様式第46の5",
+    "relation_text": "様式第46の5（第61条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第61条の9": [
+   {
+    "form": "様式第46の6",
+    "relation_text": "様式第46の6（第61条の9関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第63条": [
+   {
+    "form": "様式第47",
+    "relation_text": "様式第47（第63条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第64条": [
+   {
+    "form": "様式第48",
+    "relation_text": "様式第48（第64条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第66条": [
+   {
+    "form": "様式第49",
+    "relation_text": "様式第49（第66条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第67条の3": [
+   {
+    "form": "様式第49の2",
+    "relation_text": "様式第49の2（第67条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第71条": [
+   {
+    "form": "様式第50",
+    "relation_text": "様式第50（第71条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   }
+  ],
+  "33_denji_kisoku::第72条": [
+   {
+    "form": "様式第51",
+    "relation_text": "様式第51（第72条関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   },
+   {
+    "form": "様式第51",
+    "relation_text": "様式第51（第72条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第73条の7": [
+   {
+    "form": "様式第52の2",
+    "relation_text": "様式第52の2（第73条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0067"
+   },
+   {
+    "form": "様式第52の2",
+    "relation_text": "様式第52の2（第73条の7関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第78条": [
+   {
+    "form": "様式第53",
+    "relation_text": "様式第53（第78条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第88条": [
+   {
+    "form": "様式第60",
+    "relation_text": "様式第60（第88条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第94条の2": [
+   {
+    "form": "様式第61の2",
+    "relation_text": "様式第61の2（第94条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第94条の6": [
+   {
+    "form": "様式第62",
+    "relation_text": "様式第62（第94条の6関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第95条": [
+   {
+    "form": "様式第62の2",
+    "relation_text": "様式第62の2（第95条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   },
+   {
+    "form": "様式第62の3",
+    "relation_text": "様式第62の3（第95条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   },
+   {
+    "form": "様式第62の4",
+    "relation_text": "様式第62の4（第95条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第95条の3": [
+   {
+    "form": "様式第62の5",
+    "relation_text": "様式第62の5（第95条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第95条の4": [
+   {
+    "form": "様式第62の6",
+    "relation_text": "様式第62の6（第95条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第95条の6": [
+   {
+    "form": "様式第62の7",
+    "relation_text": "様式第62の7（第95条の6関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第97条": [
+   {
+    "form": "様式第63",
+    "relation_text": "様式第63（第97条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第97条の5": [
+   {
+    "form": "様式第63の2",
+    "relation_text": "様式第63の2（第97条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第98条": [
+   {
+    "form": "様式第64",
+    "relation_text": "様式第64（第98条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   },
+   {
+    "form": "様式第65",
+    "relation_text": "様式第65（第98条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第99条": [
+   {
+    "form": "様式第66",
+    "relation_text": "様式第66（第99条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第104条": [
+   {
+    "form": "様式第67",
+    "relation_text": "様式第67（第104条関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第104条の2": [
+   {
+    "form": "様式第67の2",
+    "relation_text": "様式第67の2（第104条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第104条の3": [
+   {
+    "form": "様式第67の3",
+    "relation_text": "様式第67の3（第104条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   }
+  ],
+  "33_denji_kisoku::第104条の4": [
+   {
+    "form": "様式第67の4",
+    "relation_text": "様式第67の4（第104条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   },
+   {
+    "form": "様式第67の4",
+    "relation_text": "様式第67の4（第104条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第104条の5": [
+   {
+    "form": "様式第67の5",
+    "relation_text": "様式第67の5（第104条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0068"
+   },
+   {
+    "form": "様式第67の5",
+    "relation_text": "様式第67の5（第104条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第104条の6": [
+   {
+    "form": "様式第68",
+    "relation_text": "様式第68（第104条の6関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第106条": [
+   {
+    "form": "様式第69",
+    "relation_text": "様式第69（第106条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第109条": [
+   {
+    "form": "様式第70",
+    "relation_text": "様式第70（第109条、第118条の2及び第120条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第118条の2": [
+   {
+    "form": "様式第70",
+    "relation_text": "様式第70（第109条、第118条の2及び第120条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第76の2",
+    "relation_text": "様式第76の2（第118条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第120条": [
+   {
+    "form": "様式第70",
+    "relation_text": "様式第70（第109条、第118条の2及び第120条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第110条": [
+   {
+    "form": "様式第71",
+    "relation_text": "様式第71（第110条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第72",
+    "relation_text": "様式第72（第110条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第111条": [
+   {
+    "form": "様式第73",
+    "relation_text": "様式第73（第111条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第116条": [
+   {
+    "form": "様式第74",
+    "relation_text": "様式第74（第116条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第118条": [
+   {
+    "form": "様式第75",
+    "relation_text": "様式第75（第118条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第76",
+    "relation_text": "様式第76（第118条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第119条": [
+   {
+    "form": "様式第77",
+    "relation_text": "様式第77（第119条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第122条": [
+   {
+    "form": "様式第78",
+    "relation_text": "様式第78（第122条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第122条の2": [
+   {
+    "form": "様式第78の2",
+    "relation_text": "様式第78の2（第122条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第122条の3": [
+   {
+    "form": "様式第78の3",
+    "relation_text": "様式第78の3（第122条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第78の4",
+    "relation_text": "様式第78の4（第122条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第122条の4": [
+   {
+    "form": "様式第78の5",
+    "relation_text": "様式第78の5（第122条の4関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第123条": [
+   {
+    "form": "様式第78の6",
+    "relation_text": "様式第78の6（第123条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第78の7",
+    "relation_text": "様式第78の7（第123条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第124条": [
+   {
+    "form": "様式第79",
+    "relation_text": "様式第79（第124条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   }
+  ],
+  "33_denji_kisoku::第127条": [
+   {
+    "form": "様式第80",
+    "relation_text": "様式第80（第127条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第80",
+    "relation_text": "様式第80（第127条関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第130条": [
+   {
+    "form": "様式第83",
+    "relation_text": "様式第83（第130条関係）",
+    "chunk_id": "33_denji_kisoku__c0069"
+   },
+   {
+    "form": "様式第83",
+    "relation_text": "様式第83（第130条関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第131条": [
+   {
+    "form": "様式第83の2",
+    "relation_text": "様式第83の2（第131条関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   },
+   {
+    "form": "様式第83の3",
+    "relation_text": "様式第83の3（第131条関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の2": [
+   {
+    "form": "様式第83の4",
+    "relation_text": "様式第83の4（第132条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の3": [
+   {
+    "form": "様式第83の5",
+    "relation_text": "様式第83の5（第132条の3関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の5": [
+   {
+    "form": "様式第83の6",
+    "relation_text": "様式第83の6（第132条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   },
+   {
+    "form": "様式第83の7",
+    "relation_text": "様式第83の7（第132条の5関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の9": [
+   {
+    "form": "様式第83の8",
+    "relation_text": "様式第83の8（第132条の9関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   },
+   {
+    "form": "様式第83の9",
+    "relation_text": "様式第83の9（第132条の9関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の12": [
+   {
+    "form": "様式第83の10",
+    "relation_text": "様式第83の10（第132条の12関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の13": [
+   {
+    "form": "様式第83の11",
+    "relation_text": "様式第83の11（第132条の13関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の15": [
+   {
+    "form": "様式第83の12",
+    "relation_text": "様式第83の12（第132条の15関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   },
+   {
+    "form": "様式第83の13",
+    "relation_text": "様式第83の13（第132条の15関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   },
+   {
+    "form": "様式第83の14",
+    "relation_text": "様式第83の14（第132条の15関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第132条の16": [
+   {
+    "form": "様式第83の15",
+    "relation_text": "様式第83の15（第132条の16関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第133条": [
+   {
+    "form": "様式第84",
+    "relation_text": "様式第84（第133条関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "33_denji_kisoku::第133条の2": [
+   {
+    "form": "様式第84の2",
+    "relation_text": "様式第84の2（第133条の2関係）",
+    "chunk_id": "33_denji_kisoku__c0070"
+   }
+  ],
+  "45_tokutei_setsubi::第5条": [
+   {
+    "form": "様式第1",
+    "relation_text": "様式第1（第5条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第2",
+    "relation_text": "様式第2（第5条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第46条": [
+   {
+    "form": "様式第3",
+    "relation_text": "様式第3（第46条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第47条": [
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第47条及び第48条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第48条": [
+   {
+    "form": "様式第4",
+    "relation_text": "様式第4（第47条及び第48条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第49条": [
+   {
+    "form": "様式第5",
+    "relation_text": "様式第5（第49条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第50条": [
+   {
+    "form": "様式第6",
+    "relation_text": "様式第6（第50条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第53条": [
+   {
+    "form": "様式第7",
+    "relation_text": "様式第7（第53条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第54条": [
+   {
+    "form": "様式第8",
+    "relation_text": "様式第8（第54条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第58条": [
+   {
+    "form": "様式第9",
+    "relation_text": "様式第9（第58条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第10",
+    "relation_text": "様式第10（第58条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第63条": [
+   {
+    "form": "様式第11",
+    "relation_text": "様式第11（第63条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第12",
+    "relation_text": "様式第12（第63条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第66条": [
+   {
+    "form": "様式第13",
+    "relation_text": "様式第13（第66条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第67条": [
+   {
+    "form": "様式第14",
+    "relation_text": "様式第14（第67条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第69条": [
+   {
+    "form": "様式第15",
+    "relation_text": "様式第15（第69条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第70条": [
+   {
+    "form": "様式第16",
+    "relation_text": "様式第16（第70条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第72条": [
+   {
+    "form": "様式第17",
+    "relation_text": "様式第17（第72条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第73条": [
+   {
+    "form": "様式第18",
+    "relation_text": "様式第18（第73条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第19",
+    "relation_text": "様式第19（第73条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第20",
+    "relation_text": "様式第20（第73条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第74条": [
+   {
+    "form": "様式第21",
+    "relation_text": "様式第21（第74条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第22",
+    "relation_text": "様式第22（第74条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   },
+   {
+    "form": "様式第23",
+    "relation_text": "様式第23（第74条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第76条": [
+   {
+    "form": "様式第24",
+    "relation_text": "様式第24（第76条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第77条": [
+   {
+    "form": "様式第25",
+    "relation_text": "様式第25（第77条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第78条": [
+   {
+    "form": "様式第26",
+    "relation_text": "様式第26（第78条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "45_tokutei_setsubi::第79条": [
+   {
+    "form": "様式第27",
+    "relation_text": "様式第27（第79条関係）",
+    "chunk_id": "45_tokutei_setsubi__c0045"
+   }
+  ],
+  "46_kikai_kentei::第5条": [
+   {
+    "form": "様式第4号",
+    "relation_text": "様式第4号（第5条関係）",
+    "chunk_id": "46_kikai_kentei__c0010"
+   },
+   {
+    "form": "様式第5号",
+    "relation_text": "様式第5号（第5条関係）",
+    "chunk_id": "46_kikai_kentei__c0010"
+   }
+  ],
+  "46_kikai_kentei::第6条": [
+   {
+    "form": "様式第7号",
+    "relation_text": "様式第7号（第6条関係）",
+    "chunk_id": "46_kikai_kentei__c0010"
+   }
+  ],
+  "46_kikai_kentei::第12条": [
+   {
+    "form": "様式第10号",
+    "relation_text": "様式第10号（第12条、第13条関係）",
+    "chunk_id": "46_kikai_kentei__c0010"
+   }
+  ],
+  "46_kikai_kentei::第13条": [
+   {
+    "form": "様式第10号",
+    "relation_text": "様式第10号（第12条、第13条関係）",
+    "chunk_id": "46_kikai_kentei__c0010"
+   }
+  ]
+ }
+}

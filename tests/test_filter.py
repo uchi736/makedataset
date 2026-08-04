@@ -55,19 +55,26 @@ def _mock_judge_llm(*, prompt: str, **kwargs) -> str:
     return json.dumps({})
 
 
+
+def _chunk(doc: str, pos: int, text: str):
+    """テスト用の Chunk (compute_rationale_grounded は Chunk 列を取る)。"""
+    from rageval.schema import Chunk
+    return Chunk(chunk_id=f"{doc}__c{pos:04d}", doc_id=doc, page=None, text=text, position=pos)
+
+
 def test_compute_rationale_grounded_all_match():
     from rageval.filter import compute_rationale_grounded
     qa = _make_qa("q", "Q?", "A")  # rationale.text = "定格電圧: DC 24V ±10%"
-    anchor_chunks = [("sample", None, "前置き 定格電圧: DC 24V ±10% その他")]
-    assert compute_rationale_grounded(qa, anchor_chunks) == 1.0
+    chunks = [_chunk("sample", 0, "前置き 定格電圧: DC 24V ±10% その他")]
+    assert compute_rationale_grounded(qa, chunks) == 1.0
 
 
 def test_compute_rationale_grounded_whitespace_insensitive():
     from rageval.filter import compute_rationale_grounded
     qa = _make_qa("q", "Q?", "A")
     # Anchor has different whitespace
-    anchor_chunks = [("sample", None, "定格電圧:\nDC  24V  ±10%\n")]
-    assert compute_rationale_grounded(qa, anchor_chunks) == 1.0
+    chunks = [_chunk("sample", 0, "定格電圧:\nDC  24V  ±10%\n")]
+    assert compute_rationale_grounded(qa, chunks) == 1.0
 
 
 def test_compute_rationale_grounded_fabricated():
@@ -76,8 +83,8 @@ def test_compute_rationale_grounded_fabricated():
     from rageval.schema import Rationale
     qa = _make_qa("q", "Q?", "A")
     qa.rationale = [Rationale(doc_id="sample", page=None, text="この文は元チャンクに存在しない")]
-    anchor_chunks = [("sample", None, "定格電圧: DC 24V ±10%")]
-    assert compute_rationale_grounded(qa, anchor_chunks) == 0.0
+    chunks = [_chunk("sample", 0, "定格電圧: DC 24V ±10%")]
+    assert compute_rationale_grounded(qa, chunks) == 0.0
 
 
 def test_compute_rationale_grounded_partial():
@@ -89,8 +96,8 @@ def test_compute_rationale_grounded_partial():
         Rationale(doc_id="sample", page=None, text="定格電圧: DC 24V ±10%"),  # in chunk
         Rationale(doc_id="sample", page=None, text="ここは捏造された引用"),    # not in chunk
     ]
-    anchor_chunks = [("sample", None, "定格電圧: DC 24V ±10%")]
-    assert compute_rationale_grounded(qa, anchor_chunks) == 0.5
+    chunks = [_chunk("sample", 0, "定格電圧: DC 24V ±10%")]
+    assert compute_rationale_grounded(qa, chunks) == 0.5
 
 
 def test_grounding_matches_second_chunk_on_same_page(tmp_path: Path):
@@ -456,3 +463,203 @@ def test_filter_batch_drops_low_answerability(tmp_path: Path):
     assert kept.qa_id == "qa_good"
     assert kept.filter_scores.answerability == 5.0
     assert kept.filter_scores.leakage == "pass"
+
+
+# ---------------- v3: 誤結合の機械検出 ----------------
+
+def _mk_chunk(doc, pos, text, refs=None):
+    from rageval.schema import Chunk
+    return Chunk(chunk_id=f"{doc}__c{pos:04d}", doc_id=doc, page=None, text=text,
+                 position=pos, section_path=[], references=refs or [])
+
+
+def _mk_qa_with_rationale(rationales):
+    from datetime import datetime
+    from rageval.schema import (
+        Explainability, GenerationInfo, QAItem, Rationale,
+        ReasoningComplexity, RetrievalDifficulty, SourceStructure,
+    )
+    return QAItem(
+        qa_id="qa_x",
+        question="省令第63条に基づく書類はどの様式を使えばよいか。",
+        answer="第63条の規定に基づく場合、様式第11を使用する。",
+        rationale=[Rationale(doc_id=d, page=None, text=t) for d, t in rationales],
+        category=[], aspect=[], kg_query_type="traceability", kg_novelty="unknown_relation",
+        reasoning_complexity=ReasoningComplexity(), retrieval_difficulty=RetrievalDifficulty(),
+        source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level="Hard", answer_level="Easy", difficulty_rationale="x",
+        generation=GenerationInfo(model="m", prompt_version="v", generated_at=datetime.now()),
+    )
+
+
+def test_collision_detected_for_unjustified_cross_doc_same_number():
+    from rageval.filter import detect_cross_doc_number_collision
+    from rageval.sampling import CrossDocPolicy
+    chunks = [
+        _mk_chunk("law_a", 0, "第１００条 省令第６３条に規定する適切な措置とは…"),
+        _mk_chunk("law_b", 0, "様式第１１（第６３条関係）様式第１２（第６３条関係）"),
+    ]
+    qa = _mk_qa_with_rationale([
+        ("law_a", "第１００条 省令第６３条に規定する適切な措置とは…"),
+        ("law_b", "様式第１１（第６３条関係）"),
+    ])
+    hit = detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy())
+    assert hit is not None and "第63条" in hit
+
+
+def test_collision_not_flagged_when_pair_justified_by_alias():
+    from rageval.filter import detect_cross_doc_number_collision
+    from rageval.sampling import CrossDocPolicy
+    chunks = [
+        _mk_chunk("law_a", 0, "ボイラー則第６３条に掲げる者は…"),
+        _mk_chunk("law_b", 0, "第６３条 一級ボイラー技士免許…様式第１１…"),
+    ]
+    qa = _mk_qa_with_rationale([
+        ("law_a", "ボイラー則第６３条に掲げる者は…"),
+        ("law_b", "第６３条 一級ボイラー技士免許…"),
+    ])
+    policy = CrossDocPolicy(doc_aliases={"law_b": ["ボイラー則"]})
+    assert detect_cross_doc_number_collision(qa, chunks, policy) is None
+
+
+def test_collision_not_flagged_for_same_doc():
+    from rageval.filter import detect_cross_doc_number_collision
+    from rageval.sampling import CrossDocPolicy
+    chunks = [
+        _mk_chunk("law_a", 0, "第６３条 …"),
+        _mk_chunk("law_a", 9, "第６３条の手続は…"),
+    ]
+    qa = _mk_qa_with_rationale([
+        ("law_a", "第６３条 …"),
+        ("law_a", "第６３条の手続は…"),
+    ])
+    assert detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy()) is None
+
+
+def test_collision_not_flagged_without_shared_number():
+    """番号を共有しない文書跨ぎ (技報同士の集約など) は検出しない。"""
+    from rageval.filter import detect_cross_doc_number_collision
+    from rageval.sampling import CrossDocPolicy
+    chunks = [
+        _mk_chunk("rep_a", 0, "アンモニア混焼では燃焼火炎の不安定化が課題となる"),
+        _mk_chunk("rep_b", 0, "誘引通風機の性能への影響が大きくなる"),
+    ]
+    qa = _mk_qa_with_rationale([
+        ("rep_a", "アンモニア混焼では燃焼火炎の不安定化が課題となる"),
+        ("rep_b", "誘引通風機の性能への影響が大きくなる"),
+    ])
+    assert detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy()) is None
+
+
+# ---------------- v3: doc スコープ照合 (連結・取り違えの防止) ----------------
+
+def test_grounded_ignores_quote_found_in_other_doc():
+    """doc A に帰属する引用が doc B の本文にあっても一致にしない。"""
+    from rageval.filter import compute_rationale_grounded
+    from rageval.schema import Rationale
+    qa = _make_qa("q", "Q?", "A")
+    qa.rationale = [Rationale(doc_id="docA", page=None, text="定格電圧: DC 24V ±10%")]
+    chunks = [
+        _chunk("docA", 0, "docA には別の話が書いてある"),
+        _chunk("docB", 0, "定格電圧: DC 24V ±10% と書いてあるのは docB"),
+    ]
+    assert compute_rationale_grounded(qa, chunks) == 0.0
+
+
+def test_grounded_no_false_hit_across_chunk_boundary():
+    """チャンクの連結境界をまたいだ文字列は一致にしない。"""
+    from rageval.filter import compute_rationale_grounded
+    from rageval.schema import Rationale
+    qa = _make_qa("q", "Q?", "A")
+    # "末尾です" + "先頭です" は連結すると現れるが、どのチャンクにも存在しない
+    qa.rationale = [Rationale(doc_id="docA", page=None, text="末尾です先頭です")]
+    chunks = [
+        _chunk("docA", 0, "これは前半の本文。末尾です"),
+        _chunk("docA", 1, "先頭です。これは後半の本文。"),
+    ]
+    assert compute_rationale_grounded(qa, chunks) == 0.0
+
+
+# ---------------- v3: 判定失敗を通過させない ----------------
+
+def test_judge_failure_drops_qa_as_unevaluated(tmp_path: Path, capsys):
+    """judge が落ちた QA は「未判定」として drop される (以前は素通りしていた)。"""
+    from rageval.llm import LLMError
+    from rageval.schema import Chunk
+
+    chunks_dir = tmp_path / "chunks"
+    chunks_dir.mkdir()
+    c = Chunk(chunk_id="sample__c0", doc_id="sample", page=None,
+              text="定格電圧: DC 24V ±10%", position=0)
+    (chunks_dir / "sample.jsonl").write_text(c.model_dump_json() + "\n", encoding="utf-8")
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    raw_path = raw_dir / "batch_test.jsonl"
+    raw_path.write_text(_make_qa("qa1", "定格電圧は？", "DC 24V").model_dump_json() + "\n",
+                        encoding="utf-8")
+
+    def judge_down(*, prompt: str, **kwargs):
+        raise LLMError("judge server down")
+
+    out_path = filter_batch(
+        raw_path=raw_path, out_dir=tmp_path / "filtered", chunks_dir=chunks_dir,
+        judge_model="mock", llm=judge_down, compute_uniqueness=False,
+    )
+    kept = [l for l in out_path.read_text(encoding="utf-8").splitlines() if l]
+    assert kept == []
+    out = capsys.readouterr().out
+    assert "unevaluated" in out
+
+
+def test_partial_judge_failure_also_drops(tmp_path: Path):
+    """一部の観点だけ落ちた場合も、必須スコアが欠けていれば drop。"""
+    from rageval.llm import LLMError
+    from rageval.schema import Chunk
+
+    chunks_dir = tmp_path / "chunks"
+    chunks_dir.mkdir()
+    c = Chunk(chunk_id="sample__c0", doc_id="sample", page=None,
+              text="定格電圧: DC 24V ±10%", position=0)
+    (chunks_dir / "sample.jsonl").write_text(c.model_dump_json() + "\n", encoding="utf-8")
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    raw_path = raw_dir / "batch_test.jsonl"
+    raw_path.write_text(_make_qa("qa1", "定格電圧は？", "DC 24V").model_dump_json() + "\n",
+                        encoding="utf-8")
+
+    def judge_grounding_down(*, prompt: str, **kwargs):
+        if "GROUNDING" in prompt:
+            raise LLMError("grounding judge down")
+        return _mock_judge_llm(prompt=prompt, **kwargs)
+
+    out_path = filter_batch(
+        raw_path=raw_path, out_dir=tmp_path / "filtered", chunks_dir=chunks_dir,
+        judge_model="mock", llm=judge_grounding_down, compute_uniqueness=False,
+    )
+    assert [l for l in out_path.read_text(encoding="utf-8").splitlines() if l] == []
+
+
+def test_decoy_exempt_from_answerability_and_leakage():
+    """decoy (棄権が正解) は answerability/leakage で落とさない (2026-08-03)。
+
+    構造的に「答えられない」が正解なので、低 answerability は正しい状態。
+    filter_batch のふるい分け条件の分岐だけを検証する。"""
+    from datetime import datetime
+    from rageval.schema import KGPathProvenance, QAItem, Rationale
+    qa = QAItem(
+        qa_id="d", question="Q?", answer="適用されません。根拠が確認できません。",
+        rationale=[Rationale(doc_id="a", chunk_id="a__c0001", page=None, text="t")],
+        reasoning_complexity={}, retrieval_difficulty={}, source_structure={},
+        explainability={"evidence_strictness": "multi-ref"},
+        retrieval_level="Hard", answer_level="Medium", difficulty_rationale="",
+        kg_novelty="unknown_relation", kg_query_type="negation_exhaustive",
+        kg_path=KGPathProvenance(
+            snapshot_id="s", path_text="p", edges=[], verifier_model="j",
+            verified_at=datetime.now(), source="kg_decoy"),
+        generation={"model": "m", "prompt_version": "v",
+                    "generated_at": datetime.now().isoformat()},
+    )
+    assert qa.kg_path.source == "kg_decoy"   # スキーマが系統を保持すること

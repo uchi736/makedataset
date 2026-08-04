@@ -13,7 +13,9 @@ For each QA:
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -21,13 +23,14 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from .chunker import load_chunks
+from .evidence import grounded_fraction, match_rationales
 from .llm import LLMError, _parse_json, embed as llm_embed, generate as llm_generate
 from .prompts import load_prompt
 from .sampling import compute_embeddings
 from .schema import Chunk, QAItem, RAGAnswerMatch, RAGVerification
 
 DEFAULT_PROMPT = "prompts/rag_verify.md"
-DEFAULT_TOP_K = 5
+DEFAULT_TOP_K = 10   # 2026-08-04: 本番 KG-OFF (fetch20→rerank→top10) に合わせた
 
 # モデルが「回答不能」の指示に従わず別表現で返す場合があるので、
 # それらをまとめて「答えなし」扱いにして judge を呼ばないようにする。
@@ -125,6 +128,125 @@ def _format_chunks_block(chunks: list[Chunk]) -> str:
     return "\n\n".join(parts)
 
 
+# ---------------- BM25 (語彙検索) ----------------
+# 実運用の RAG はハイブリッド検索 (密ベクトル + 語彙) がデファクトなので、
+# スクリーニング (難易度実測・型確定) も同じ基準で行う。密ベクトルだけを
+# 基準にすると、条番号や専門語の一致で語彙検索なら一発で当たる問いまで
+# 「検索で届かない = KG が要る」と誤認し、KG の優位を過大評価する。
+
+import math
+import unicodedata
+from collections import Counter
+
+_LATIN_NUM_RE = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
+
+
+def _bm25_tokens(text: str) -> list[str]:
+    """日本語向けの軽量トークナイザ (形態素解析なし・依存追加なし)。
+
+    英数字の連続は1トークン、それ以外 (CJK) は文字バイグラム。
+    条番号 (「第101条」→ '101' + 「第1」「1条」系のバイグラム) や規格番号
+    (JIS B 8265 → 'jis' '8265') の一致が拾えれば十分。
+    """
+    s = unicodedata.normalize("NFKC", text or "").lower()
+    tokens: list[str] = []
+    for m in _LATIN_NUM_RE.finditer(s):
+        tokens.append(m.group(0))
+    cjk_runs = _LATIN_NUM_RE.sub(" ", s)
+    for run in cjk_runs.split():
+        run = "".join(ch for ch in run if not ch.isspace())
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
+    return tokens
+
+
+class BM25Index:
+    """Okapi BM25。チャンク集合に対して1回だけ構築する。"""
+
+    def __init__(self, chunks: list[Chunk], *, k1: float = 1.5, b: float = 0.75):
+        self.k1, self.b = k1, b
+        self._tfs: list[Counter] = []
+        self._dls: list[int] = []
+        df: Counter = Counter()
+        for c in chunks:
+            toks = _bm25_tokens(c.text)
+            tf = Counter(toks)
+            self._tfs.append(tf)
+            self._dls.append(len(toks))
+            df.update(tf.keys())
+        n = max(len(chunks), 1)
+        self._avgdl = (sum(self._dls) / n) if n else 1.0
+        self._idf = {t: math.log((n - d + 0.5) / (d + 0.5) + 1.0)
+                     for t, d in df.items()}
+
+    def scores(self, query: str) -> np.ndarray:
+        q = Counter(_bm25_tokens(query))
+        out = np.zeros(len(self._tfs), dtype=float)
+        for tok in q:
+            idf = self._idf.get(tok)
+            if idf is None:
+                continue
+            for i, tf in enumerate(self._tfs):
+                f = tf.get(tok)
+                if not f:
+                    continue
+                dl = self._dls[i] or 1
+                out[i] += idf * (f * (self.k1 + 1)) / (
+                    f + self.k1 * (1 - self.b + self.b * dl / self._avgdl))
+        return out
+
+
+# リランク前の候補プール。2026-08-04 に 20→100 へ引き上げ (ユーザ判断):
+# 「KG しか解けない」認定は、埋め込み候補100をリランカーで絞っても届かない、
+# という現実的に最強の構成に耐えて初めて名乗れる。実測ではプール到達は
+# fetch50 で飽和しており、100 に上げても偽の multi_hop を増やさない。
+DEFAULT_FETCH_K = 100
+
+
+def _rerank_via_api(query: str, docs: list[str], *, endpoint: str, model: str,
+                    timeout: float = 60.0) -> list[float]:
+    """交差エンコーダのリランク API (/v1/rerank) を呼び、文書ごとの関連度を返す。"""
+    import json as _json
+    import urllib.request
+
+    body = _json.dumps({"model": model, "query": query, "documents": docs}).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint.rstrip("/") + "/rerank", data=body,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = _json.loads(r.read().decode("utf-8"))
+    scores = [0.0] * len(docs)
+    for item in data.get("results", []):
+        scores[int(item["index"])] = float(item.get("relevance_score", 0.0))
+    return scores
+
+
+def build_reranker_from_env():
+    """RERANK_ENDPOINT / RERANK_MODEL が設定されていればリランカー関数を返す。
+
+    本番 RAG (KG-OFF) は「密+疎 → 交差エンコーダで並べ直し」の2段構成なので、
+    スクリーニングも同じ基準に揃える (2026-08-04: リランク無し top5 の選別が
+    本番 top10+リランクに全て解かれ、multi_hop 認定が過大だったため)。
+    """
+    endpoint = os.getenv("RERANK_ENDPOINT", "").strip()
+    model = os.getenv("RERANK_MODEL", "").strip()
+    if not endpoint or not model:
+        return None
+    def rerank(query: str, docs: list[str]) -> list[float]:
+        return _rerank_via_api(query, docs, endpoint=endpoint, model=model)
+    return rerank
+
+
+def _rrf_fuse(rank_lists: list[np.ndarray], k: int = 60) -> np.ndarray:
+    """Reciprocal Rank Fusion。rank_lists は各手法の順位 (0始まり) の配列。"""
+    score = np.zeros(len(rank_lists[0]), dtype=float)
+    for ranks in rank_lists:
+        score += 1.0 / (k + 1 + ranks)
+    return score
+
+
 def _retrieve_topk(
     question: str,
     chunks: list[Chunk],
@@ -132,8 +254,11 @@ def _retrieve_topk(
     top_k: int,
     *,
     embed: EmbedCaller,
+    bm25: Optional[BM25Index] = None,
+    reranker=None,
+    fetch_k: int = DEFAULT_FETCH_K,
 ) -> list[Chunk]:
-    """Embed the question and return the top-k chunks by cosine similarity.
+    """質問に対する top-k チャンク。bm25 で RRF 融合、reranker で2段目の並べ直し。
 
     同点時は元の順序を保つため stable ソートを使う (埋め込み量子化等で同値が
     出たときに run ごとに retrieved_chunk_ids が揺れて rag_answer まで
@@ -152,9 +277,25 @@ def _retrieve_topk(
         )
     sims = chunk_embeddings @ q_norm
     k = min(top_k, len(chunks))
-    # 同点時は元の順序を保つため stable
-    top_idx = np.argsort(-sims, kind='stable')[:k]
-    return [chunks[int(i)] for i in top_idx]
+    if bm25 is None:
+        top_idx = np.argsort(-sims, kind='stable')[:k]
+        return [chunks[int(i)] for i in top_idx]
+    # ハイブリッド: 密・語彙それぞれの順位を RRF で融合
+    dense_rank = np.empty(len(chunks), dtype=int)
+    dense_rank[np.argsort(-sims, kind='stable')] = np.arange(len(chunks))
+    lex = bm25.scores(question)
+    lex_rank = np.empty(len(chunks), dtype=int)
+    lex_rank[np.argsort(-lex, kind='stable')] = np.arange(len(chunks))
+    fused = _rrf_fuse([dense_rank, lex_rank])
+    if reranker is None:
+        top_idx = np.argsort(-fused, kind='stable')[:k]
+        return [chunks[int(i)] for i in top_idx]
+    # 2段目: 候補プール fetch_k を交差エンコーダで並べ直して top_k に選抜
+    pool_idx = np.argsort(-fused, kind='stable')[:min(fetch_k, len(chunks))]
+    pool = [chunks[int(i)] for i in pool_idx]
+    scores = reranker(question, [c.text for c in pool])
+    order = sorted(range(len(pool)), key=lambda i: -scores[i])
+    return [pool[i] for i in order[:k]]
 
 
 _CHUNK_ID_SUFFIX_RE = re.compile(r"__c\d+$")
@@ -171,23 +312,26 @@ def _normalize_for_match(s: str) -> str:
     return _WS_RE.sub("", s)
 
 
-def _retrieval_hits(qa: QAItem, retrieved: list[Chunk]) -> tuple[bool, bool]:
-    """根拠が上位 k にどう当たったかを (文書一致, チャンク一致) で返す。
+def _retrieval_hits(qa: QAItem, retrieved: list[Chunk]) -> tuple[bool, bool, float]:
+    """根拠が上位 k にどう当たったかを (文書一致, チャンク一致, 命中率) で返す。
 
     - 文書一致: 根拠と同じ doc_id のチャンクが1個でも上位 k に居れば真。
       技報のように1文書が数十チャンクに割れるコーパスでは、根拠とは
       無関係な章のチャンクが拾われただけで真になるので、検索健全性の
       判定指標として単独で使うと過大評価になる。
-    - チャンク一致: 根拠本文 (rationale.text) を逐語で含むチャンクが
-      上位 k に居れば真。filter 側の逐語照合と同じ空白正規化規則を使う。
-      チャンク粒度の検索健全性を見る本命指標。
+    - チャンク一致: **全ての必須根拠**が上位 k の中で逐語一致したときだけ真。
+      2026-08-01 まで「いずれか1件が当たれば真」だったため、3根拠中1件しか
+      取れていない問いが「命中 → 検索 Easy」と記録されていた (実測で
+      複数根拠14問中5問が該当)。複数根拠を要する問いは、全部取れて初めて
+      RAG が答えに到達できるので、全件一致を基準にする。
+    - 命中率: 逐語一致した根拠の割合。部分命中を捨てずに持つ。
 
-    根拠が空のときは両方とも偽。
-    根拠の doc_id がチャンクID形式 (foo__c0023) のときは、その chunk_id
-    自体が上位に居れば文書一致を真にする (既存挙動の維持)。
+    照合は evidence.match_rationales に委譲し、**根拠ごとに、その根拠が
+    名乗る文書のチャンク内だけ**で見る (別文書への取り違え・連結境界の
+    偶然一致を防ぐ)。根拠が空のときは全て偽/0.0。
     """
     if not qa.rationale:
-        return False, False
+        return False, False, 0.0
 
     rationale_doc_ids = {_normalize_doc_id(r.doc_id) for r in qa.rationale}
     rationale_chunk_id_hints = {r.doc_id for r in qa.rationale}
@@ -199,17 +343,11 @@ def _retrieval_hits(qa: QAItem, retrieved: list[Chunk]) -> tuple[bool, bool]:
     if not hit_doc and (rationale_chunk_id_hints & retrieved_chunk_ids):
         hit_doc = True
 
-    # チャンク一致は逐語で見る。空白差を吸収するため整形してから部分一致。
-    retrieved_blob = "".join(_normalize_for_match(c.text) for c in retrieved)
-    hit_chunk = False
-    if retrieved_blob:
-        for r in qa.rationale:
-            needle = _normalize_for_match(r.text)
-            if needle and needle in retrieved_blob:
-                hit_chunk = True
-                break
+    matches = match_rationales(qa.rationale, retrieved)
+    ratio = grounded_fraction(matches)
+    hit_chunk = bool(matches) and all(m.matched for m in matches)
 
-    return hit_doc, hit_chunk
+    return hit_doc, hit_chunk, ratio
 
 
 def _retrieval_hit(qa: QAItem, retrieved: list[Chunk]) -> bool:
@@ -218,7 +356,7 @@ def _retrieval_hit(qa: QAItem, retrieved: list[Chunk]) -> bool:
     既存テスト・既存呼び出し点との互換のために残す。新しいコードは
     `_retrieval_hits` を使い、文書一致とチャンク一致を分けて持つこと。
     """
-    hit_doc, hit_chunk = _retrieval_hits(qa, retrieved)
+    hit_doc, hit_chunk, _ = _retrieval_hits(qa, retrieved)
     return hit_doc or hit_chunk
 
 
@@ -234,23 +372,36 @@ def rag_verify_qa(
     judge_section: str,
     llm: LLMCaller,
     embed: EmbedCaller,
-) -> RAGVerification:
-    """Run vector RAG once and judge the answer. Returns the RAGVerification.
+    bm25: Optional[BM25Index] = None,
+    reranker=None,
+    fetch_k: int = DEFAULT_FETCH_K,
+) -> Optional[RAGVerification]:
+    """Run vector RAG once and judge the answer.
 
-    Conservative on errors: any LLM failure → answer_match='no_match', empty rag_answer.
+    検索そのものが失敗した場合は **None を返す** (未検証として保留)。
+    回答生成や judge が失敗した場合は judge_ok=False の RAGVerification を返す。
+    どちらも「vector RAG が解けなかった (no_match)」という意味の判定とは
+    区別する — 障害が KG候補ラベルに化けるのを防ぐため。
     """
     # Step 1: retrieve
+    # 検索が落ちた場合は「検索も回答も全滅」に見えるレコードを作らない。
+    # 作ってしまうと障害が retrieval_level=Hard / answer_match=no_match という
+    # 意味のあるラベルに化ける (= 障害ほど「良いデータ」が増えて見える)。
     try:
-        retrieved = _retrieve_topk(qa.question, chunks, chunk_embeddings, top_k, embed=embed)
+        retrieved = _retrieve_topk(qa.question, chunks, chunk_embeddings, top_k,
+                                   embed=embed, bm25=bm25, reranker=reranker,
+                                   fetch_k=fetch_k)
     except Exception as e:
-        print(f"[rag-verify] {qa.qa_id} retrieve failed: {e}")
-        retrieved = []
+        print(f"[rag-verify] {qa.qa_id} retrieve failed (未検証として保留): "
+              f"{type(e).__name__}: {e}")
+        return None
 
     retrieved_ids = [c.chunk_id for c in retrieved]
-    hit_doc, hit_chunk = _retrieval_hits(qa, retrieved)
+    hit_doc, hit_chunk, hit_ratio = _retrieval_hits(qa, retrieved)
 
     # Step 2: RAG answer
     rag_answer = ""
+    judge_ok = True
     if retrieved:
         chunks_block = _format_chunks_block(retrieved)
         rag_prompt = (
@@ -263,21 +414,26 @@ def rag_verify_qa(
                 prompt=rag_prompt,
                 model=rag_model,
                 temperature=0.0,
-                max_tokens=1024,
+                max_tokens=4096,
                 force_json=True,
             )
             rag_answer = _parse_json_safely(raw).get("answer", "").strip()
         except Exception as e:
-            # APIConnectionError 等で全件落ちないように広めに捕捉
+            # APIConnectionError 等で全件落ちないように広めに捕捉。
+            # ただし「回答できなかった」ではなく「聞けなかった」なので、
+            # judge_ok=False にして後段の KG候補集計から外す。
             print(f"[rag-verify] {qa.qa_id} rag answer failed: {type(e).__name__}: {e}")
+            judge_ok = False
 
     # Step 3: judge
     # match は judge が想定どおりに返したときだけ書き換える。
     # judge を呼ばなかった/落ちた/想定外を返したときはすべて 'no_match' のまま残るが、
-    # 後段でこの3者を区別できるよう、生の verdict を judge_raw に保存しておく。
+    # 後段でこの3者を区別できるよう judge_raw (生の verdict) と judge_ok (照合が
+    # 成立したか) を保存する。judge_ok=False の no_match は「vector RAG が解けなかった」
+    # 証拠にはならないので、KG候補として数えてはならない。
     match: RAGAnswerMatch = "no_match"
     judge_raw: Optional[str] = None
-    if not _is_unable_answer(rag_answer):
+    if judge_ok and not _is_unable_answer(rag_answer):
         judge_prompt = (
             judge_section
             .replace("{ground_truth}", qa.answer)
@@ -288,7 +444,7 @@ def rag_verify_qa(
                 prompt=judge_prompt,
                 model=judge_model,
                 temperature=0.0,
-                max_tokens=512,
+                max_tokens=4096,
                 force_json=True,
             )
             verdict = _parse_json_safely(raw).get("match", "").strip().lower()
@@ -302,23 +458,108 @@ def rag_verify_qa(
                 print(
                     f"[rag-verify] {qa.qa_id} unexpected judge verdict: {verdict!r}"
                 )
+                judge_ok = False
         except Exception as e:
             print(f"[rag-verify] {qa.qa_id} judge failed: {type(e).__name__}: {e}")
+            judge_ok = False
 
     return RAGVerification(
         top_k=top_k,
         retrieved_chunk_ids=retrieved_ids,
+        retrieval_mode=("hybrid_rerank" if (bm25 is not None and reranker is not None)
+                        else "hybrid" if bm25 is not None else "dense"),
         retrieval_hit_doc=hit_doc,
         retrieval_hit_chunk=hit_chunk,
+        retrieval_hit_ratio=hit_ratio,
         # 旧フィールドは「どちらかが真」を入れて後方互換を保つ
         retrieval_hit=hit_doc or hit_chunk,
         rag_answer=rag_answer,
         answer_match=match,
         judge_raw=judge_raw,
+        judge_ok=judge_ok,
         rag_model=rag_model,
         judge_model=judge_model,
         verified_at=datetime.now(),
     )
+
+
+def apply_measured_retrieval_level(qa: QAItem) -> bool:
+    """rag-verify の実測から retrieval_level を上書きする (P4: ラベルの実測化)。
+
+    生成時の retrieval_level はチャンク組成からの見込み値で、実際に検索が
+    届くかは実走するまで分からない。実測の対応:
+    - 全ての必須根拠が top-k に入った (hit_ratio=1.0) → Easy (ベクトル検索で届く)
+    - 一部の根拠だけ届いた / 文書までは当たるがチャンクは外れ → Medium
+    - 文書にも届かない → Hard
+
+    2026-08-01: 以前は「いずれか1件の根拠が当たれば Easy」だったため、
+    3根拠中1件しか取れていない問いまで Easy に落ちていた。部分命中は
+    Medium として扱う。書き換えた場合は履歴を difficulty_rationale に残す。
+    """
+    rv = qa.rag_verification
+    if rv is None:
+        return False
+    hit_doc = rv.retrieval_hit_doc or rv.retrieval_hit
+    ratio = rv.retrieval_hit_ratio
+    if rv.retrieval_hit_chunk or ratio >= 1.0:
+        measured = "Easy"
+    elif ratio > 0.0 or hit_doc:
+        measured = "Medium"
+    else:
+        measured = "Hard"
+    if qa.retrieval_level == measured:
+        return False
+    old = qa.retrieval_level
+    qa.retrieval_level = measured
+    note = (f"[実測 {datetime.now():%Y-%m-%d}] 検索難易度 {old}→{measured} "
+            f"(rag-verify: 根拠命中 {ratio:.0%}, hit_doc={bool(hit_doc)})")
+    qa.difficulty_rationale = (qa.difficulty_rationale + " / " + note).strip(" /")
+    return True
+
+
+def sync_kg_query_type_from_retrieval(qa: QAItem) -> bool:
+    """KG 経路由来 QA の型 (multi_hop / single_fact) を検索必要性で確定する。
+
+    LOO (回答内容の必要性) は連鎖型を系統的に降格する (2026-08-01 実測 17/18):
+    連鎖型は回答の固有値が終端チャンクに集中するため、終端だけで回答が
+    導出でき、LOO は始点側を「不要」と判定してしまう。しかし始点側の価値は
+    回答の導出ではなく**検索上の必要性** (どの規定が該当するかの特定) にある。
+
+    そこで「質問だけのベクトル検索 (top-k) で終端の根拠チャンクが直接引けたか」
+    で判定する:
+      - 直接引けた → 経路を辿る必要が無い → single_fact
+      - 引けない → 経路を辿らないと終端に到達できない → multi_hop (復元を含む)
+
+    LOO と構造判別 (classify_evidence_structure) は束ね検出用として残る。
+    """
+    kp, rv = qa.kg_path, qa.rag_verification
+    if kp is None or rv is None or len(kp.edges) < 2:
+        return False
+    # 「終端」概念は連鎖にしかない。星 (aggregation) や除外 (negation) の型は
+    # ここで確定しない — aggregation の実測は retrieval_hit_ratio (要素チャンクの
+    # top-k 被覆率) が既に担っている。
+    if kp.shape != "chain":
+        return False
+    # decoy は「関係が無い」ことが正解で、終端の検索可否に意味が無い
+    if getattr(kp, "source", "kg_covered") == "kg_decoy":
+        return False
+    # 型の再判定は multi_hop ⇄ single_fact の間だけ。traceability 等の型は
+    # 設計で決まっており、検索必要性で上書きしない (2026-08-03: trace が
+    # relabel される事故で追加)
+    if qa.kg_query_type not in ("multi_hop", "single_fact"):
+        return False
+    terminal = kp.edges[-1].source_chunk_id
+    direct = terminal in rv.retrieved_chunk_ids
+    target = "single_fact" if direct else "multi_hop"
+    if qa.kg_query_type == target:
+        return False
+    old = qa.kg_query_type
+    qa.kg_query_type = target
+    detail = ("終端チャンクが top-k に直接命中 (経路を辿る必要なし)" if direct
+              else "終端チャンクは top-k に入らず経路経由でのみ到達可能")
+    note = f"[型確定 {datetime.now():%Y-%m-%d}] {detail} のため {old}→{target}"
+    qa.difficulty_rationale = (qa.difficulty_rationale + " / " + note).strip(" /")
+    return True
 
 
 def rag_verify_batch(
@@ -333,9 +574,14 @@ def rag_verify_batch(
     embed: Optional[EmbedCaller] = None,
     chunk_embeddings: Optional[np.ndarray] = None,
     out_path: Optional[Path] = None,
+    update_labels: bool = True,
+    hybrid: bool = True,
 ) -> Path:
-    """Run vector RAG ground-truth verification on every QA in a JSONL.
+    """Run RAG ground-truth verification on every QA in a JSONL.
 
+    検索は既定でハイブリッド (密ベクトル + BM25 の RRF 融合)。実運用の RAG が
+    ハイブリッドである以上、スクリーニングも同じ基準で行う (hybrid=False は
+    旧来の密ベクトルのみとの比較用)。
     Writes results back. If `out_path` is None, overwrites `in_path`.
     """
     _, body = load_prompt(str(prompt_path))
@@ -361,6 +607,11 @@ def rag_verify_batch(
             f"chunk_embeddings rows={chunk_embeddings.shape[0]} != chunks={len(chunks)} — "
             "古い埋め込みを使い回している恐れがあるので、もう一度埋め込みを取り直してください"
         )
+    bm25 = BM25Index(chunks) if hybrid else None
+    reranker = build_reranker_from_env() if hybrid else None
+    mode = ("hybrid_rerank (密+BM25 → 交差エンコーダ)" if reranker is not None
+            else "hybrid (密+BM25 RRF)" if hybrid else "dense のみ")
+    print(f"[rag-verify] 検索方式: {mode} / top_k={top_k}")
 
     qas: list[QAItem] = []
     with in_path.open("r", encoding="utf-8") as f:
@@ -369,48 +620,80 @@ def rag_verify_batch(
             if line:
                 qas.append(QAItem.model_validate_json(line))
 
-    # 1問ずつ append 書き出し。Ctrl-C / Azure 全断 / OOM で途中で死んでも、
-    # それまで verify した結果は out_path に残るようにする。
+    # 完走するまでは同じディレクトリの一時ファイルへ書く。既定の in-place
+    # 実行で Ctrl-C / OOM / プロセス停止が起きても、元の全 QA を失わない。
+    # 完走後だけ os.replace するため、別 out_path の既存内容も途中失敗から守る。
     out = out_path or in_path
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.open("w", encoding="utf-8").close()  # 既存内容を空にする
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{out.name}.", suffix=".tmp", dir=out.parent,
+    )
+    tmp_path = Path(tmp_name)
 
     n_match = n_partial = n_no_match = n_hit_doc = n_hit_chunk = 0
+    n_failed = 0          # 検索が落ちて未検証のまま保留した件数
+    n_judge_ng = 0        # 回答・judge が落ちて照合できなかった件数
     n_total = len(qas)
-    for i, qa in enumerate(qas, 1):
-        result = rag_verify_qa(
-            qa,
-            chunks=chunks,
-            chunk_embeddings=chunk_embeddings,
-            top_k=top_k,
-            rag_model=rag_model,
-            judge_model=judge_model,
-            rag_section=rag_section,
-            judge_section=judge_section,
-            llm=caller,
-            embed=embedder,
-        )
-        qa.rag_verification = result
-        if result.answer_match == "match":
-            n_match += 1
-        elif result.answer_match == "partial":
-            n_partial += 1
-        else:
-            n_no_match += 1
-        if result.retrieval_hit_doc:
-            n_hit_doc += 1
-        if result.retrieval_hit_chunk:
-            n_hit_chunk += 1
-        # 1問ずつ追記書き出し (途中で死んでも既処理分は失われない)
-        with out.open("a", encoding="utf-8") as f:
-            f.write(qa.model_dump_json() + "\n")
-        print(
-            f"[rag-verify] [{i}/{n_total}] {qa.qa_id} → match={result.answer_match}"
-            f" hit_doc={result.retrieval_hit_doc} hit_chunk={result.retrieval_hit_chunk}"
-        )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            for i, qa in enumerate(qas, 1):
+                result = rag_verify_qa(
+                    qa,
+                    chunks=chunks,
+                    chunk_embeddings=chunk_embeddings,
+                    top_k=top_k,
+                    rag_model=rag_model,
+                    judge_model=judge_model,
+                    rag_section=rag_section,
+                    judge_section=judge_section,
+                    llm=caller,
+                    embed=embedder,
+                    bm25=bm25,
+                    reranker=reranker,
+                )
+                if result is None:
+                    # 検索失敗。既存の検証結果があればそれを壊さず残す。
+                    n_failed += 1
+                    f.write(qa.model_dump_json() + "\n")
+                    print(f"[rag-verify] [{i}/{n_total}] {qa.qa_id} → 未検証 (検索失敗)")
+                    continue
+                qa.rag_verification = result
+                if update_labels:
+                    apply_measured_retrieval_level(qa)
+                    sync_kg_query_type_from_retrieval(qa)
+                if not result.judge_ok:
+                    n_judge_ng += 1
+                elif result.answer_match == "match":
+                    n_match += 1
+                elif result.answer_match == "partial":
+                    n_partial += 1
+                else:
+                    n_no_match += 1
+                if result.retrieval_hit_doc:
+                    n_hit_doc += 1
+                if result.retrieval_hit_chunk:
+                    n_hit_chunk += 1
+                f.write(qa.model_dump_json() + "\n")
+                print(
+                    f"[rag-verify] [{i}/{n_total}] {qa.qa_id} → "
+                    f"{'照合不能' if not result.judge_ok else 'match=' + result.answer_match}"
+                    f" hit_doc={result.retrieval_hit_doc}"
+                    f" 根拠命中={result.retrieval_hit_ratio:.0%}"
+                )
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, out)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        finally:
+            raise
 
     print(
         f"[rag-verify] done: match={n_match} partial={n_partial} no_match={n_no_match} "
         f"(hit_doc={n_hit_doc}/{len(qas)} hit_chunk={n_hit_chunk}/{len(qas)}) → {out}"
     )
+    if n_failed or n_judge_ng:
+        print(f"[rag-verify] WARNING: 未検証 {n_failed} 件 / 照合不能 {n_judge_ng} 件 "
+              f"— これらは no_match (KG候補) として数えないこと")
     return out

@@ -183,6 +183,7 @@ def _load_items(
                         continue
                     row = qa.model_dump(mode="json")
                     row["__source"] = path.name
+                    row["__source_path"] = str(path.resolve())
                     items.append(row)
                 except Exception:
                     skipped[path.name] = skipped.get(path.name, 0) + 1
@@ -216,6 +217,7 @@ def _to_dataframe(items: list[dict]) -> pd.DataFrame:
         rows.append({
             "qa_id": it.get("qa_id"),
             "source": it.get("__source"),
+            "source_path": it.get("__source_path"),
             "question": it.get("question"),
             "answer": it.get("answer"),
             "business_scenario": it.get("business_scenario"),
@@ -550,29 +552,7 @@ def _status_lines(df: pd.DataFrame) -> list[tuple[str, str]]:
     return out
 
 
-# ---------------- Tab body renderers (extracted so both general and kg_poc
-# track-specific dashboards can reuse the bodies) ----------------
-
-def _render_balance_tab(df: pd.DataFrame) -> None:
-    st.caption("色: 緑=易 / 黄=中 / 赤=難。赤縦線=目標値。バーが赤線に近いほど良い配分。")
-    st.markdown("#### 検索難易度 (目標: 易 37.5% / 中 37.5% / 難 25%)")
-    st.altair_chart(
-        _row_bar(df, "retrieval_level", DIFF_ORDER, targets=TARGET_SEARCH_DIFF,
-                 color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS, show_legend=True),
-        width="stretch",
-    )
-    st.markdown("#### 回答難易度 (目標: 易 17.5% / 中 62.5% / 難 20%)")
-    st.altair_chart(
-        _row_bar(df, "answer_level", DIFF_ORDER, targets=TARGET_ANSWER_DIFF,
-                 color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS, show_legend=True),
-        width="stretch",
-    )
-    if "category_primary" in df.columns and df["category_primary"].notna().any():
-        st.markdown("#### 棄権(Abstention)比率 (目標: 10%-15%)")
-        absten_n = int((df["category_primary"] == "Abstention").sum())
-        absten_r = absten_n / len(df) if len(df) else 0
-        st.progress(min(absten_r / 0.15, 1.0), text=f"{absten_n} 件 / {len(df)} 件 = {absten_r:.1%}")
-
+# ---------------- Tab body renderers (分析タブの折りたたみ節から再利用) ----------------
 
 def _render_quality_tab(df: pd.DataFrame) -> None:
     if not df["answerability"].notna().any():
@@ -729,62 +709,78 @@ def _render_detail_tab(df: pd.DataFrame, items: list[dict]) -> None:
 
 # ---------------- Main ----------------
 
-def main() -> None:
-    args = _parse_args()
-    track_filter = getattr(args, "track", "general")
-    st.set_page_config(page_title="rageval stats", layout="wide", page_icon=":bar_chart:")
-    track_badge = {
-        "all":     ("全track",          "#1F2329"),
-        "general": ("general (25観点)", "#45637A"),
-        "kg_poc":  ("KG-PoC (3軸)",    "#C25239"),
-    }.get(track_filter, (track_filter, "#1F2329"))
+def _render_usage_guide() -> None:
+    """『使い方 — 3ステップ』。ヘッダーの popover から開く。"""
     st.markdown(
-        f"## RAG評価ダッシュボード "
-        f"<span style='font-size:12px;padding:3px 10px;background:{track_badge[1]};"
-        f"color:white;margin-left:8px;vertical-align:4px;'>{track_badge[0]}</span>",
-        unsafe_allow_html=True,
+        "**使い方 — 3ステップ**\n\n"
+        "1. **データセットを選ぶ** (左サイドバー上段)。"
+        "`raw`=生成直後 / `filtered`=判定LLM通過 / `reviewed`=レビュー済み。"
+        "ふだんは `filtered` を開いてレビューする。\n"
+        "2. **「分析」タブで現在地を確かめる**。件数・難易度の配分・品質ゲート"
+        "通過率が目標に届いているかを見る。\n"
+        "3. **「レビュー」タブで1問ずつ判定する**。①質問と回答を読む → "
+        "②根拠(黄色の箇所)を確かめる → ③採用/修正/却下。判定は即座に "
+        "`data/reviewed/` に保存され、そのファイルが納品物になる。\n\n"
+        "根拠の照合先チャンクは自動で探す。狙いを固定したいときはサイドバーの"
+        "「詳細設定」から。"
     )
 
-    # Sidebar input
-    st.sidebar.header("入力")
-    pattern = st.sidebar.text_input("path / dir / glob", args.input)
-    paths = _resolve_inputs(pattern)
-    if not paths:
-        st.error(f"No files match: {pattern}")
-        return
-    st.sidebar.caption(f"track: **{track_badge[0]}**")
-    st.sidebar.caption("読み込みファイル:")
-    for p in paths:
-        st.sidebar.caption(f"• {p.name}")
 
-    items, skipped = _load_items(tuple(str(p) for p in paths), track_filter=track_filter)
-    if skipped:
-        with st.sidebar.expander(f"スキップ {sum(skipped.values())} 件 (旧スキーマ)", expanded=False):
-            for name, n in skipped.items():
-                st.caption(f"• {name}: {n} 件")
-    df_all = _to_dataframe(items)
-    if df_all.empty:
-        st.warning("No valid QA items.")
-        return
+def _discover_data_sources(data_root: Path) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    """data_root 配下の (データセットdir, ファイル名) と chunks* dir を列挙する。"""
+    datasets: list[tuple[str, list[str]]] = []
+    chunk_dirs: list[str] = []
+    if not data_root.exists():
+        return datasets, chunk_dirs
+    for d in sorted(data_root.iterdir()):
+        if not d.is_dir():
+            continue
+        jsonls = sorted(p.name for p in d.glob("*.jsonl"))
+        if d.name.startswith("chunks"):
+            if jsonls:
+                chunk_dirs.append(d.name)
+            continue
+        if jsonls:
+            datasets.append((d.name, jsonls))
+    return datasets, chunk_dirs
 
-    # Sidebar filters
-    st.sidebar.divider()
-    st.sidebar.header("絞り込み")
-    cats_avail = sorted(df_all["category_primary"].dropna().unique())
-    status_avail = sorted(df_all["review_status"].dropna().unique())
-    src_avail = sorted(df_all["source"].dropna().unique())
-    sel_cat = st.sidebar.multiselect("カテゴリ", cats_avail, default=cats_avail)
-    sel_status = st.sidebar.multiselect("review_status", status_avail, default=status_avail)
-    sel_source = st.sidebar.multiselect("source file", src_avail, default=src_avail)
 
-    df = df_all[
-        df_all["category_primary"].isin(sel_cat)
-        & df_all["review_status"].isin(sel_status)
-        & df_all["source"].isin(sel_source)
-    ]
+def _auto_pick_chunks(
+    items: list[dict], data_root: Path, chunk_dirs: list[str],
+) -> str | None:
+    """先頭数件の rationale が最も多く逐語一致する chunks* dir を選ぶ。"""
+    import re as _re
 
-    # Top status
-    st.caption(f"対象 {len(df)} / {len(df_all)} 件")
+    from rageval.review_app import _resolve_anchor_chunks
+    from rageval.schema import QAItem
+
+    sample = items[:8]
+    best: str | None = None
+    best_hits = -1
+    for name in chunk_dirs:
+        cdir = str(data_root / name)
+        hits = 0
+        for it in sample:
+            try:
+                qa = QAItem.model_validate(it)
+            except Exception:
+                continue
+            anchors = _resolve_anchor_chunks(qa, cdir)
+            stripped = _re.sub(r"\s+", "", "".join(c.text for c in anchors))
+            for r in qa.rationale:
+                needle = _re.sub(r"\s+", "", r.text)
+                if needle and needle in stripped:
+                    hits += 1
+        if hits > best_hits:
+            best, best_hits = name, hits
+    return best
+
+
+def _render_analysis_tab(df, items: list[dict], has_general: bool, has_kg: bool) -> None:
+    """分析タブ: 健全性 + 分布 (常時) + カバレッジ/品質/RAG/KG (折りたたみ)。"""
+    # --- 健全性チェック ---
+    st.markdown("### 健全性チェック")
+    st.caption("rag_eval_dataset_r1_plan の目標値に対する現在地。")
     for kind, msg in _status_lines(df):
         if kind == "ok":
             st.success(msg, icon=":material/check_circle:")
@@ -793,259 +789,327 @@ def main() -> None:
         else:
             st.info(msg, icon=":material/info:")
 
-    # KPI row
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("QA総数", len(df))
-    k2.metric("ドキュメント数", df["doc_id"].nunique())
-    k3.metric("採点済QA", int(df["answerability"].notna().sum()))
-    k4.metric("未レビュー", int((df["review_status"] == "pending").sum()))
-    k5.metric("承認済", int((df["review_status"] == "accepted").sum()))
-    k6.metric("却下", int((df["review_status"] == "rejected").sum()))
+    # --- 健全性スコアカード ---
+    lo, hi = PILOT_SIZE_RANGE
+    n_total = len(df)
+    aspect_counts = (
+        df.explode("aspect_list")["aspect_list"].value_counts()
+        if not df.empty else pd.Series(dtype=int)
+    )
+    covered_aspects = int((aspect_counts >= 1).sum())
+    well_covered = int((aspect_counts >= ASPECT_MIN_PER).sum())
+    n_reviewed = int((df["review_status"].isin(["accepted", "edited", "rejected"])).sum())
+    review_rate = n_reviewed / n_total if n_total else 0
+    scored = df.dropna(subset=["answerability"])
+    if len(scored):
+        passed = int(((scored["answerability"] >= ANSWERABILITY_PASS) & (scored["leakage"] != "fail")).sum())
+        quality_rate = passed / len(scored)
+        quality_text = f"{quality_rate:.0%} ({passed}/{len(scored)})"
+    else:
+        quality_rate = None
+        quality_text = "未判定"
+    rag_verified = int(df["rag_answer_match"].notna().sum()) if "rag_answer_match" in df.columns else 0
+    if rag_verified > 0:
+        rag_match = int((df["rag_answer_match"] == "match").sum())
+        rag_pass_rate = rag_match / rag_verified
+        rag_pass_text = f"{rag_pass_rate:.0%} ({rag_match}/{rag_verified})"
+    else:
+        rag_pass_rate = None
+        rag_pass_text = "—"
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric(
+        f"件数 (目標 {lo}-{hi})", f"{n_total} 件",
+        delta=f"{n_total - lo:+d} 対パイロット下限" if n_total else None,
+        delta_color="normal" if n_total >= lo else "inverse",
+    )
+    k2.metric("観点カバレッジ (≥1問)", f"{covered_aspects} / 25",
+              delta=f"目標達成(≥{ASPECT_MIN_PER}問): {well_covered}/25")
+    k3.metric("レビュー進捗", f"{review_rate:.0%}", delta=f"{n_reviewed}/{n_total} 件")
+    k4.metric("品質ゲート通過率", quality_text,
+              delta=None if quality_rate is None else ("健全" if quality_rate >= 0.7 else "要改善"),
+              delta_color="normal" if (quality_rate or 0) >= 0.7 else "inverse")
+    k5.metric("RAG検証通過率", rag_pass_text,
+              delta=None if rag_pass_rate is None else ("vector RAGで充足" if rag_pass_rate >= 0.7 else "KG候補多め"),
+              delta_color="off" if rag_pass_rate is None else ("normal" if rag_pass_rate >= 0.7 else "inverse"),
+              help="rag_verification 未実行時は '—'")
 
     st.divider()
 
-    # レビュー用 in-memory QAItem リストを構築 (df 経由ではなく元の items から)
-    from rageval.review_app import render_review_panel
-    from rageval.schema import QAItem
-    # 現在の絞り込み (df 由来) に含まれる qa_id だけを取り出す
-    df_ids = set(df["qa_id"].tolist())
-    review_qas = [QAItem.model_validate(it) for it in items if it.get("qa_id") in df_ids]
-    # session に持つ (フィルタやファイル切替で reset)
-    review_state_key = f"review_qas_{paths[0].name}_{track_filter}"
-    if st.session_state.get("_review_state_key") != review_state_key:
-        st.session_state.review_qas = review_qas
-        st.session_state.rv_idx = 0
-        st.session_state._review_state_key = review_state_key
-    reviewed_out = Path(args.reviewed_out) / paths[0].name
+    # --- 分布の俯瞰 ---
+    st.markdown("### 分布の俯瞰")
+    st.caption("赤縦線=目標値。バーが赤線に近いほど良い配分。")
+    oc1, oc2, oc3 = st.columns(3)
+    with oc1:
+        st.markdown("**カテゴリ**")
+        st.altair_chart(
+            _row_bar(df, "category_primary", CATEGORY_ORDER,
+                     color_map=CATEGORY_COLORS, label_map=CATEGORY_LABELS),
+            width="stretch",
+        )
+    with oc2:
+        st.markdown("**検索難易度** (目標: 易 37.5% / 中 37.5% / 難 25%)")
+        st.altair_chart(
+            _row_bar(df, "retrieval_level", DIFF_ORDER, targets=TARGET_SEARCH_DIFF,
+                     color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS),
+            width="stretch",
+        )
+    with oc3:
+        st.markdown("**回答難易度** (目標: 易 17.5% / 中 62.5% / 難 20%)")
+        st.altair_chart(
+            _row_bar(df, "answer_level", DIFF_ORDER, targets=TARGET_ANSWER_DIFF,
+                     color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS),
+            width="stretch",
+        )
+    if has_general:
+        st.markdown("**棄権 (Abstention) 比率** (目標: 10%-15%)")
+        absten_n = int((df["category_primary"] == "Abstention").sum())
+        absten_r = absten_n / len(df) if len(df) else 0
+        st.progress(min(absten_r / 0.15, 1.0), text=f"{absten_n} 件 / {len(df)} 件 = {absten_r:.1%}")
 
-    # KG-PoC専用ダッシュボード
-    if track_filter == "kg_poc":
-        kg_labels = ["KG-PoC概要", "バランス", "品質スコア", "一覧", "レビュー", "RAG検証", "個別表示"]
-        kg_tabs = st.tabs(kg_labels)
-        with kg_tabs[0]:
-            _render_kg_tab(df)
-        with kg_tabs[1]:
-            _render_balance_tab(df)
-        with kg_tabs[2]:
-            _render_quality_tab(df)
-        with kg_tabs[3]:
-            _render_list_tab(df)
-        with kg_tabs[4]:
-            render_review_panel(
-                items=st.session_state.review_qas,
-                out_path=reviewed_out,
-                chunks_dir=args.chunks,
-                reviewer=args.reviewer,
-                key_prefix="rv",
-                show_header=True,
-                input_label=f"reviewed → <b>{reviewed_out}</b>",
-                track_label="[KG-PoC]",
-            )
-        with kg_tabs[5]:
+    st.divider()
+
+    # --- 折りたたみ節: カバレッジ / 品質 / RAG / KG (データが無い節は出さない) ---
+    if has_general:
+        n_gap = sum(
+            1 for c in CATEGORY_ORDER for d in DIFF_ORDER
+            if int(((df["category_primary"] == c) & (df["retrieval_level"] == d)).sum()) == 0
+        )
+        with st.expander(
+            f"カバレッジ (25観点)　—　目標達成 {well_covered}/25 観点 ・ 未カバーセル {n_gap} 個",
+            expanded=False,
+        ):
+            st.markdown("#### カテゴリ × 検索難易度")
+            st.caption("赤背景セル = 0件 (Phase 2 の補充対象)")
+            st.altair_chart(_coverage_heatmap(df), width="stretch")
+            st.markdown(f"#### 25観点カバレッジ (目標: 各観点 最低 {ASPECT_MIN_PER}問)")
+            st.caption("赤縦線が目標下限。バーが赤線より右なら達成。")
+            st.altair_chart(_aspect_coverage_chart(df), width="stretch")
+            st.markdown("#### ドキュメント別件数")
+            doc_order = sorted(df["doc_id"].dropna().unique())
+            st.altair_chart(_row_bar(df, "doc_id", doc_order), width="stretch")
+
+            st.markdown(f"#### 25観点リファレンス (目標: 各観点 ≥ {ASPECT_MIN_PER} 問)")
+            for cat in CATEGORY_ORDER:
+                aspects_in_cat = [a for a in ALL_ASPECTS if ASPECT_TO_CATEGORY.get(a) == cat]
+                n_achieved = sum(1 for a in aspects_in_cat if int(aspect_counts.get(a, 0)) >= ASPECT_MIN_PER)
+                cat_label = CATEGORY_LABELS.get(cat, cat)
+                with st.expander(f"**{cat_label}**  ({n_achieved} / {len(aspects_in_cat)} 観点が目標達成)",
+                                 expanded=False):
+                    rows = []
+                    for a in aspects_in_cat:
+                        cnt = int(aspect_counts.get(a, 0))
+                        status = "✓" if cnt >= ASPECT_MIN_PER else ("△" if cnt > 0 else "✗")
+                        rows.append({
+                            "状態": status, "観点": ASPECT_LABELS.get(a, a), "件数": cnt,
+                            "観点ID": a, "定義": ASPECT_DESCRIPTIONS.get(a, ""),
+                            "現場例": ASPECT_EXAMPLES.get(a, ""),
+                        })
+                    st.dataframe(
+                        pd.DataFrame(rows), width="stretch", hide_index=True,
+                        column_config={
+                            "状態": st.column_config.TextColumn(width="small"),
+                            "件数": st.column_config.NumberColumn(width="small"),
+                            "観点ID": st.column_config.TextColumn(width="small"),
+                            "観点": st.column_config.TextColumn(width="medium"),
+                            "定義": st.column_config.TextColumn(width="large"),
+                            "現場例": st.column_config.TextColumn(width="large"),
+                        },
+                    )
+
+    with st.expander(f"品質スコア (判定LLM)　—　ゲート通過 {quality_text}", expanded=False):
+        _render_quality_tab(df)
+
+    if rag_verified > 0:
+        n_no_match = int((df["rag_answer_match"] == "no_match").sum())
+        with st.expander(
+            f"RAG検証 (実走)　—　検証済 {rag_verified} 件 ・ 不一致(KG候補) {n_no_match} 件",
+            expanded=False,
+        ):
             _render_rag_verify_tab(df)
-        with kg_tabs[6]:
-            _render_detail_tab(df, items)
+
+    if has_kg:
+        kg_n = int((df["kg_query_type"].notna() | df["kg_novelty"].notna()).sum())
+        with st.expander(f"KG-PoC (3軸)　—　{kg_n} 件", expanded=False):
+            _render_kg_tab(df)
+
+
+def main() -> None:
+    args = _parse_args()
+    st.set_page_config(page_title="rageval", layout="wide", page_icon=":clipboard:")
+
+    # ---- データ置き場と候補の探索 ----
+    default_input = Path(args.input)
+    data_root = Path("data")
+    if not data_root.exists():
+        data_root = default_input.parent if str(default_input.parent) else Path(".")
+    datasets, chunk_dirs = _discover_data_sources(data_root)
+
+    # ---- ヘッダー: タイトル + 使い方 ----
+    h_title, h_help = st.columns([6, 1])
+    with h_title:
+        st.markdown("## rageval — RAG評価データセットのレビューと分析")
+    with h_help:
+        with st.popover("❓ 使い方", use_container_width=True):
+            _render_usage_guide()
+
+    # ---- サイドバー ① データセット ----
+    st.sidebar.markdown("**① データセットを選ぶ**")
+    ds_names = [name for name, _ in datasets]
+    ds_files = dict(datasets)
+    # --in が「dir」でも「dir/file.jsonl」でも既定選択を合わせる
+    if default_input.suffix == ".jsonl":
+        default_ds_name, default_file = default_input.parent.name, default_input.name
+    else:
+        default_ds_name, default_file = default_input.name, None
+    if ds_names:
+        default_ds = default_ds_name if default_ds_name in ds_names else ds_names[0]
+        sel_ds = st.sidebar.selectbox(
+            "データセット", ds_names, index=ds_names.index(default_ds),
+            label_visibility="collapsed",
+        )
+        files = ds_files[sel_ds]
+        sel_file = None
+        if len(files) > 1:
+            options = ["(全ファイル)"] + files
+            file_idx = options.index(default_file) if default_file in options else 0
+            picked = st.sidebar.selectbox(
+                "ファイル", options, index=file_idx, label_visibility="collapsed")
+            sel_file = None if picked == "(全ファイル)" else picked
+        base = data_root / sel_ds
+        pattern = str(base / sel_file) if sel_file else str(base)
+    else:
+        pattern = st.sidebar.text_input("path / dir / glob", args.input)
+        sel_ds = pattern
+    st.sidebar.caption("raw=生成直後 / filtered=判定通過 / reviewed=レビュー済み")
+
+    # ---- サイドバー ② レビュー者 ----
+    st.sidebar.markdown("**② レビュー者 (reviewed_by)**")
+    reviewer = st.sidebar.text_input("reviewer", args.reviewer, label_visibility="collapsed")
+
+    # ---- サイドバー 詳細設定 (トラック / チャンク) ----
+    with st.sidebar.expander("詳細設定", expanded=False):
+        track_options = {
+            "自動 (全track)": "all",
+            "general (25観点) のみ": "general",
+            "KG-PoC (3軸) のみ": "kg_poc",
+        }
+        default_track = getattr(args, "track", "all")
+        default_track_label = next((k for k, v in track_options.items() if v == default_track), "自動 (全track)")
+        track_filter = track_options[st.selectbox(
+            "トラックの表示", list(track_options),
+            index=list(track_options).index(default_track_label),
+        )]
+        chunk_choices = ["自動 (一致する場所を探す)"] + chunk_dirs
+        default_chunk = Path(args.chunks).name
+        chunk_idx = chunk_choices.index(default_chunk) if default_chunk in chunk_choices else 0
+        chunk_sel = st.selectbox("根拠の照合先チャンク", chunk_choices, index=chunk_idx)
+
+    # ---- 読み込み ----
+    paths = _resolve_inputs(pattern)
+    if not paths:
+        st.error(f"ファイルが見つかりません: {pattern}")
+        return
+    items, skipped = _load_items(tuple(str(p) for p in paths), track_filter=track_filter)
+    df_all = _to_dataframe(items)
+    if df_all.empty:
+        st.warning("有効な QA がありません。データセットの選択を確認してください。")
+        if skipped:
+            st.caption(f"旧スキーマで {sum(skipped.values())} 件スキップ")
         return
 
-    # general/all track: 概要にバランスを統合し、独立タブは廃止
-    has_kg = df["kg_query_type"].notna().any() or df["kg_novelty"].notna().any()
-    tab_labels = ["概要", "カバレッジ", "品質スコア", "一覧", "レビュー", "RAG検証", "個別表示"]
-    if has_kg:
-        tab_labels.append("KG-PoC")
-    tabs = st.tabs(tab_labels)
-    (
-        tab_overview, tab_coverage, tab_quality, tab_list,
-        tab_review, tab_rag_verify, tab_detail,
-    ) = tabs[:7]
-    tab_kg = tabs[7] if has_kg else None
+    # ---- チャンク照合先の解決 (自動 or 明示) ----
+    if chunk_sel.startswith("自動"):
+        auto_key = f"_auto_chunks_{sel_ds}"
+        if auto_key not in st.session_state:
+            st.session_state[auto_key] = (
+                _auto_pick_chunks(items, data_root, chunk_dirs)
+                or (chunk_dirs[0] if chunk_dirs else "chunks")
+            )
+        chunks_name = st.session_state[auto_key]
+        chunks_dir_resolved = str(data_root / chunks_name)
+    else:
+        chunks_name = chunk_sel
+        chunks_dir_resolved = str(data_root / chunk_sel)
+
+    # ---- サイドバー 絞り込み ----
+    with st.sidebar.expander("絞り込み", expanded=False):
+        cats_avail = sorted(df_all["category_primary"].dropna().unique())
+        status_avail = sorted(df_all["review_status"].dropna().unique())
+        src_avail = sorted(df_all["source"].dropna().unique())
+        sel_cat = st.multiselect("カテゴリ", cats_avail, default=cats_avail)
+        sel_status = st.multiselect("レビュー状況", status_avail, default=status_avail)
+        sel_source = st.multiselect("ファイル", src_avail, default=src_avail)
+    if skipped:
+        st.sidebar.caption(f"旧スキーマ {sum(skipped.values())} 件をスキップ")
+
+    df = df_all[
+        df_all["category_primary"].isin(sel_cat)
+        & df_all["review_status"].isin(sel_status)
+        & df_all["source"].isin(sel_source)
+    ]
+
+    st.caption(
+        f"data/{sel_ds} ・ 対象 {len(df)} / {len(df_all)} 件 ・ 照合先チャンク: {chunks_name}"
+    )
+    if df.empty:
+        st.info("絞り込みで全件が除外されています。サイドバーの絞り込みを緩めてください。")
+        return
+
+    # ---- レビュー用 QAItem リスト (絞り込み後の source + qa_id) ----
+    from rageval.review_app import _save_review_item, render_review_panel
+    from rageval.schema import QAItem
+    df_keys = set(zip(df["source_path"], df["qa_id"]))
+    review_records = [
+        (QAItem.model_validate(it), Path(str(it["__source_path"])))
+        for it in items
+        if (it.get("__source_path"), it.get("qa_id")) in df_keys
+    ]
+    review_state_key = (
+        "review_qas", sel_ds, track_filter,
+        tuple(sorted((str(source), str(qa_id)) for source, qa_id in df_keys)),
+    )
+    if st.session_state.get("_review_state_key") != review_state_key:
+        st.session_state.review_qas = [qa for qa, _ in review_records]
+        st.session_state.review_sources = {
+            id(qa): str(source) for qa, source in review_records
+        }
+        st.session_state.rv_idx = 0
+        st.session_state._review_state_key = review_state_key
+    reviewed_dir = Path(args.reviewed_out)
+
+    def _save_from_dashboard(qa: QAItem) -> None:
+        source = Path(st.session_state.review_sources[id(qa)])
+        _save_review_item(qa, source, reviewed_dir / source.name)
+
+    has_general = bool((df["kg_query_type"].isna() & df["kg_novelty"].isna()).any())
+    has_kg = bool(df["kg_query_type"].notna().any() or df["kg_novelty"].notna().any())
+
+    # ---- 3タブ: レビュー (既定) / 一覧 / 分析 ----
+    tab_review, tab_list, tab_analysis = st.tabs(["レビュー", "一覧", "分析"])
+
     with tab_review:
         render_review_panel(
             items=st.session_state.review_qas,
-            out_path=reviewed_out,
-            chunks_dir=args.chunks,
-            reviewer=args.reviewer,
+            # render_review_panel の既定保存は使わず、元ファイル別 callback で保存する。
+            out_path=reviewed_dir,
+            chunks_dir=chunks_dir_resolved,
+            reviewer=reviewer,
             key_prefix="rv",
             show_header=True,
-            input_label=f"reviewed → <b>{reviewed_out}</b>",
+            input_label=f"reviewed → <b>{reviewed_dir}/&lt;元ファイル名&gt;</b>",
             track_label=f"[{track_filter}]",
+            on_save=_save_from_dashboard,
         )
 
-    # ===== 概要 (Executive Summary) =====
-    with tab_overview:
-        # --- 1. 健全性 KPI ---
-        st.markdown("### 健全性スコアカード")
-        lo, hi = PILOT_SIZE_RANGE
-        n_total = len(df)
-        size_rate = min(n_total / lo, 1.0) if lo else 0
-
-        aspect_counts = df.explode("aspect_list")["aspect_list"].value_counts() if not df.empty else pd.Series(dtype=int)
-        covered_aspects = int((aspect_counts >= 1).sum())
-        well_covered = int((aspect_counts >= ASPECT_MIN_PER).sum())
-
-        n_reviewed = int((df["review_status"].isin(["accepted", "edited", "rejected"])).sum())
-        review_rate = n_reviewed / n_total if n_total else 0
-
-        scored = df.dropna(subset=["answerability"])
-        if len(scored):
-            passed = int(((scored["answerability"] >= ANSWERABILITY_PASS) & (scored["leakage"] != "fail")).sum())
-            quality_rate = passed / len(scored)
-            quality_text = f"{quality_rate:.0%} ({passed}/{len(scored)})"
-        else:
-            quality_rate = None
-            quality_text = "未判定"
-
-        rag_verified = int(df["rag_answer_match"].notna().sum()) if "rag_answer_match" in df.columns else 0
-        if rag_verified > 0:
-            rag_match = int((df["rag_answer_match"] == "match").sum())
-            rag_pass_rate = rag_match / rag_verified
-            rag_pass_text = f"{rag_pass_rate:.0%} ({rag_match}/{rag_verified})"
-        else:
-            rag_pass_rate = None
-            rag_pass_text = "—"
-
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric(
-            f"件数達成 (目標 {lo}-{hi})",
-            f"{n_total} 件",
-            delta=f"{n_total - lo:+d} 対パイロット下限" if n_total else None,
-            delta_color="normal" if n_total >= lo else "inverse",
-        )
-        k2.metric(
-            "観点カバレッジ (≥1問)",
-            f"{covered_aspects} / 25",
-            delta=f"目標達成(≥{ASPECT_MIN_PER}問): {well_covered}/25",
-        )
-        k3.metric(
-            "レビュー進捗",
-            f"{review_rate:.0%}",
-            delta=f"{n_reviewed}/{n_total} 件",
-        )
-        k4.metric(
-            "品質ゲート通過率",
-            quality_text,
-            delta=None if quality_rate is None else (
-                "健全" if quality_rate >= 0.7 else "要改善"
-            ),
-            delta_color="normal" if (quality_rate or 0) >= 0.7 else "inverse",
-        )
-        k5.metric(
-            "RAG検証通過率",
-            rag_pass_text,
-            delta=None if rag_pass_rate is None else (
-                "vector RAGで充足" if rag_pass_rate >= 0.7 else "KG候補多め"
-            ),
-            delta_color="off" if rag_pass_rate is None else (
-                "normal" if rag_pass_rate >= 0.7 else "inverse"
-            ),
-            help="rag_verification 未実行時は '—'",
-        )
-
-        st.divider()
-
-        # --- 2. 分布の俯瞰 ---
-        st.markdown("### 分布の俯瞰")
-        st.caption("赤縦線=目標値。バーが赤線に近いほど良い配分。")
-        oc1, oc2, oc3 = st.columns(3)
-        with oc1:
-            st.markdown("**カテゴリ**")
-            st.altair_chart(
-                _row_bar(df, "category_primary", CATEGORY_ORDER,
-                         color_map=CATEGORY_COLORS, label_map=CATEGORY_LABELS),
-                width="stretch",
-            )
-        with oc2:
-            st.markdown("**検索難易度** (目標: 易 37.5% / 中 37.5% / 難 25%)")
-            st.altair_chart(
-                _row_bar(df, "retrieval_level", DIFF_ORDER, targets=TARGET_SEARCH_DIFF,
-                         color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS),
-                width="stretch",
-            )
-        with oc3:
-            st.markdown("**回答難易度** (目標: 易 17.5% / 中 62.5% / 難 20%)")
-            st.altair_chart(
-                _row_bar(df, "answer_level", DIFF_ORDER, targets=TARGET_ANSWER_DIFF,
-                         color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS),
-                width="stretch",
-            )
-
-        # 棄権比率 (元バランスタブから移動)
-        if "category_primary" in df.columns and df["category_primary"].notna().any():
-            st.markdown("**棄権 (Abstention) 比率** (目標: 10%-15%)")
-            absten_n = int((df["category_primary"] == "Abstention").sum())
-            absten_r = absten_n / len(df) if len(df) else 0
-            st.progress(min(absten_r / 0.15, 1.0), text=f"{absten_n} 件 / {len(df)} 件 = {absten_r:.1%}")
-
-        st.divider()
-
-        # --- 3. 25観点リファレンス ---
-        st.markdown(f"### 25観点リファレンス (目標: 各観点 ≥ {ASPECT_MIN_PER} 問)")
-        st.caption("カテゴリごとに展開。件数列は現在のデータセットでの登場数。")
-
-        for cat in CATEGORY_ORDER:
-            aspects_in_cat = [a for a in ALL_ASPECTS if ASPECT_TO_CATEGORY.get(a) == cat]
-            n_achieved = sum(1 for a in aspects_in_cat if int(aspect_counts.get(a, 0)) >= ASPECT_MIN_PER)
-            cat_label = CATEGORY_LABELS.get(cat, cat)
-            header = f"**{cat_label}**  ({n_achieved} / {len(aspects_in_cat)} 観点が目標達成)"
-            with st.expander(header, expanded=(cat == "Integration")):
-                rows = []
-                for a in aspects_in_cat:
-                    cnt = int(aspect_counts.get(a, 0))
-                    status = "✓" if cnt >= ASPECT_MIN_PER else ("△" if cnt > 0 else "✗")
-                    rows.append({
-                        "状態": status,
-                        "観点": ASPECT_LABELS.get(a, a),
-                        "件数": cnt,
-                        "観点ID": a,
-                        "定義": ASPECT_DESCRIPTIONS.get(a, ""),
-                        "現場例": ASPECT_EXAMPLES.get(a, ""),
-                    })
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    width="stretch", hide_index=True,
-                    column_config={
-                        "状態": st.column_config.TextColumn(width="small"),
-                        "件数": st.column_config.NumberColumn(width="small"),
-                        "観点ID": st.column_config.TextColumn(width="small"),
-                        "観点": st.column_config.TextColumn(width="medium"),
-                        "定義": st.column_config.TextColumn(width="large"),
-                        "現場例": st.column_config.TextColumn(width="large"),
-                    },
-                )
-
-    # ===== カバレッジ (general track only - uses 25 aspects) =====
-    with tab_coverage:
-        st.markdown("#### カテゴリ × 検索難易度")
-        st.caption("赤背景セル = 0件 (Phase 2 の補充対象)")
-        st.altair_chart(_coverage_heatmap(df), width="stretch")
-
-        st.markdown(f"#### 25観点カバレッジ (目標: 各観点 最低 {ASPECT_MIN_PER}問)")
-        st.caption("赤縦線が目標下限。バーが赤線より右なら達成。")
-        st.altair_chart(_aspect_coverage_chart(df), width="stretch")
-
-        st.markdown("#### ドキュメント別件数")
-        doc_order = sorted(df["doc_id"].dropna().unique())
-        st.altair_chart(_row_bar(df, "doc_id", doc_order), width="stretch")
-
-    # ===== 品質スコア =====
-    with tab_quality:
-        _render_quality_tab(df)
-
-    # ===== 一覧 =====
     with tab_list:
         _render_list_tab(df)
-
-    # ===== RAG検証 =====
-    with tab_rag_verify:
-        _render_rag_verify_tab(df)
-
-    # ===== 個別表示 =====
-    with tab_detail:
+        st.divider()
+        st.markdown("#### 個別表示")
         _render_detail_tab(df, items)
 
-    # ===== KG-PoC (only when KG fields present) =====
-    if tab_kg is not None:
-        with tab_kg:
-            _render_kg_tab(df)
+    with tab_analysis:
+        _render_analysis_tab(df, items, has_general, has_kg)
 
 
 def _render_rag_verify_tab(df: pd.DataFrame) -> None:

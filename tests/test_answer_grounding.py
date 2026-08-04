@@ -172,3 +172,146 @@ def test_grounding_batch_writes_grounded_jsonl(tmp_path):
     assert len(lines) == 1
     data = json.loads(lines[0])
     assert data["answer_grounding"]["per_doc_sufficient"] == {"d1": False, "d2": True}
+
+
+# ---------------- v3: 降格処理 ----------------
+
+def _qa_for_demote(qt="multi_hop", per_doc=None):
+    from datetime import datetime
+    from rageval.schema import (
+        AnswerGrounding, Explainability, GenerationInfo, QAItem, Rationale,
+        ReasoningComplexity, RetrievalDifficulty, SourceStructure,
+    )
+    qa = QAItem(
+        qa_id="qa_d", question="q?", answer="a",
+        rationale=[Rationale(doc_id="d1", page=None, text="t1"),
+                   Rationale(doc_id="d2", page=None, text="t2")],
+        category=[], aspect=[], kg_query_type=qt, kg_novelty="unknown_relation",
+        reasoning_complexity=ReasoningComplexity(), retrieval_difficulty=RetrievalDifficulty(),
+        source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level="Hard", answer_level="Medium", difficulty_rationale="元の根拠",
+        generation=GenerationInfo(model="m", prompt_version="v", generated_at=datetime.now()),
+    )
+    if per_doc is not None:
+        qa.answer_grounding = AnswerGrounding(
+            per_doc_sufficient=per_doc, judge_model="j", judge_raw="", verified_at=datetime.now())
+    return qa
+
+
+def test_demote_when_not_all_required():
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(per_doc={"d1": True, "d2": False})  # d1 は伏せても答えが決まる
+    assert demote_if_not_required(qa) is True
+    assert qa.kg_query_type == "single_fact"
+    assert "降格" in qa.difficulty_rationale and "multi_hop" in qa.difficulty_rationale
+
+
+def test_no_demote_when_all_required():
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(per_doc={"d1": False, "d2": False})
+    assert demote_if_not_required(qa) is False
+    assert qa.kg_query_type == "multi_hop"
+
+
+def test_no_demote_for_single_fact_or_missing():
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(qt="single_fact", per_doc={"d1": True, "d2": True})
+    assert demote_if_not_required(qa) is False
+    qa2 = _qa_for_demote(per_doc=None)
+    assert demote_if_not_required(qa2) is False
+
+
+def test_demote_single_unit_multi_hop():
+    from rageval.answer_grounding import demote_single_unit
+    from rageval.schema import Rationale
+    qa = _qa_for_demote(per_doc=None)
+    qa.rationale = [Rationale(doc_id="d1", page=None, text="t1")]  # 1単位
+    assert demote_single_unit(qa) is True
+    assert qa.kg_query_type == "single_fact"
+    assert "矛盾" in qa.difficulty_rationale
+
+
+def test_demote_single_unit_skips_two_units_and_single_fact():
+    from rageval.answer_grounding import demote_single_unit
+    qa = _qa_for_demote(per_doc=None)  # d1/d2 の2単位
+    assert demote_single_unit(qa) is False
+    qa2 = _qa_for_demote(qt="single_fact", per_doc=None)
+    qa2.rationale = qa2.rationale[:1]
+    assert demote_single_unit(qa2) is False
+
+
+# ---------------- v3: 判定失敗の分離と降格粒度 ----------------
+
+def test_judge_failure_is_not_counted_as_required():
+    """judge が落ちた単位は errors に入り、本丸 (全根拠必須) と認めない。"""
+    from rageval.answer_grounding import grounding_for_qa, is_all_docs_required
+    from rageval.llm import LLMError
+    qa = _qa_for_demote(per_doc=None)
+
+    def judge_down(**kwargs):
+        raise LLMError("judge down")
+
+    ag = grounding_for_qa(qa, judge_section="{question}{answer}{hidden_doc_id}"
+                          "{hidden_text}{remaining_text}",
+                          judge_model="mock", llm=judge_down)
+    assert ag.errors == ["d1", "d2"]
+    assert ag.per_doc_sufficient == {}
+    assert is_all_docs_required(ag) is False
+
+
+def test_no_demote_when_two_units_still_required():
+    """3根拠中1つが冗長でも、残り2つが必須ならマルチホップのまま。"""
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(per_doc={"d1": True, "d2": False, "d3": False})
+    assert demote_if_not_required(qa) is False
+    assert qa.kg_query_type == "multi_hop"
+
+
+def test_demote_when_only_one_unit_required():
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(per_doc={"d1": True, "d2": False})
+    assert demote_if_not_required(qa) is True
+    assert qa.kg_query_type == "single_fact"
+
+
+def test_no_demote_when_grounding_had_errors():
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(per_doc={"d1": True, "d2": False})
+    qa.answer_grounding.errors = ["d3"]
+    assert demote_if_not_required(qa) is False
+
+
+def test_sync_retrieval_difficulty_recomputes_flags():
+    from rageval.answer_grounding import sync_retrieval_difficulty
+    from rageval.schema import Rationale
+    qa = _qa_for_demote(per_doc=None)
+    qa.retrieval_difficulty.multi_doc = True
+    qa.retrieval_difficulty.multi_chunk = True
+    qa.rationale = [Rationale(doc_id="d1", page=None, text="t")]  # 実態は単一
+    assert sync_retrieval_difficulty(qa) is True
+    assert qa.retrieval_difficulty.multi_doc is False
+    assert qa.retrieval_difficulty.multi_chunk is False
+
+
+def test_demote_single_unit_skips_kg_path_items():
+    """回帰: 除外条項1チャンクが正規の形である negation (kg_path 付き) を
+    「根拠単位が1つ」規則で降格しないこと (2026-08-04 の誤変換事故)。"""
+    from datetime import datetime
+    from rageval.answer_grounding import demote_single_unit
+    from rageval.schema import KGPathProvenance, QAItem, Rationale
+    qa = QAItem(
+        qa_id="n", question="Q?", answer="適用されません。",
+        rationale=[Rationale(doc_id="a", chunk_id="a__c0001", page=None, text="適用しない")],
+        reasoning_complexity={}, retrieval_difficulty={}, source_structure={},
+        explainability={"evidence_strictness": "multi-ref"},
+        retrieval_level="Hard", answer_level="Medium", difficulty_rationale="",
+        kg_query_type="negation_exhaustive",
+        kg_path=KGPathProvenance(snapshot_id="s", path_text="p", edges=[],
+                                 verifier_model="j", verified_at=datetime.now(),
+                                 shape="exclusion"),
+        generation={"model": "m", "prompt_version": "v",
+                    "generated_at": datetime.now().isoformat()},
+    )
+    assert demote_single_unit(qa) is False
+    assert qa.kg_query_type == "negation_exhaustive"

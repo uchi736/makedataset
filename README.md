@@ -18,7 +18,7 @@
 | 何のための評価か | RAG が **広く** どんな質問形に弱いかを総合測定 | **KG-RAG が単純ベクター検索より勝てる** ことを示すための PoC 用 |
 | 分類軸の数 | **25観点 × 5カテゴリ** の1階層分類 | **5クエリ型 × 3未知性 = 15セル** + プロービングで `LLM既知性 known/unknown` |
 | 軸の定義場所 | [aspects.py](src/rageval/aspects.py) | [tracks/kg_poc.py](src/rageval/tracks/kg_poc.py) |
-| 生成プロンプト | [prompts/generate.md](prompts/generate.md) | [prompts/generate_kg_poc.md](prompts/generate_kg_poc.md) |
+| 生成プロンプト | [prompts/generate.md](prompts/generate.md) | 通常: [prompts/generate_kg_poc.md](prompts/generate_kg_poc.md) / 既存KG起点: [prompts/generate_kg_path.md](prompts/generate_kg_path.md) |
 | 配分の指定 | 観点はループ毎にランダム抽選 | `--mix qt:nov=N,...` で明示。未指定なら15セルに等分 |
 | 専用コマンド | `review` / `stats` | `review-kg` / `stats-kg` / `probe` (任意) |
 | QAItem 上の主タグ | `category[]` / `aspect[]` | `kg_query_type` / `kg_novelty` / `llm_knowledge` |
@@ -80,6 +80,8 @@ Python 3.12+ / `uv` 0.8+。
 | 判定LLM (Azure OpenAI) | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_API_VERSION` | — |
 | 〃 | `AZURE_OPENAI_CHAT_DEPLOYMENT_NAME` | `gpt-4.1-mini` |
 | 判定LLM (Claude) | `ANTHROPIC_API_KEY` | — |
+| KG辺の含意判定モデル | `KG_PROVENANCE_MODEL` | Azure配備 → `JUDGE_MODEL` の順でフォールバック |
+| 既存KG (読み取り専用) | `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PW` | — |
 | PDF 抽出 (Azure DI) | `AZURE_DI_ENDPOINT` / `AZURE_DI_API_KEY` / `AZURE_DI_MODEL` | `prebuilt-layout` |
 
 モデル名で接続先を自動判定する ([llm.py](src/rageval/llm.py#L84-L102)):
@@ -98,18 +100,43 @@ Python 3.12+ / `uv` 0.8+。
 | `discover-patterns` | ◯ | ◯ | コーパス固有の参照識別子を LLM に発見させる (任意) |
 | `generate --track general` | ◯ | — | 25観点ベースで QA 生成 |
 | `generate --track kg_poc [--mix ...]` | — | ◯ | 3軸ベースで QA 生成 |
+| `kg-generate` | — | ◯ | 既存Neo4j KGの2ホップ経路を原文で辺ごとに検証し、通過経路からQA生成 |
 | `filter` | ◯ | ◯ | 判定LLMで6軸スコアリング + 重複検知 + 根拠検証。`--reject-too-easy` / `--require-rag-fail` / `--require-rag-hit` / `--require-rationale-retrieved` で rag-verify 結果や難易度を使った絞り込みも可能 |
 | `rag-verify` | ◯ | ◯ | 検索付きで vector RAG が解けるかを ground truth として測り `rag_verification` を付与 (トラック非依存) |
 | `probe` | — | ◯ | 素の LLM に同じ質問を投げて `llm_knowledge` を付与 |
 | `review` | ◯ | — | レビューUI (general 用チェックリスト) |
 | `review-kg` | — | ◯ | レビューUI (KG適性チェックリスト付き) |
-| `stats` | ◯ | — | ダッシュボード (25観点別の集計タブ) |
-| `stats-kg` | — | ◯ | ダッシュボード (3軸別の集計タブ) |
+| `stats` | ◯ | ◯ | ダッシュボード + レビュー統合 (3タブ: レビュー / 一覧 / 分析)。データセット・トラックは画面上で切替 |
+| `stats-kg` | — | ◯ | `stats` の KG-PoC 既定版 (別名) |
+| `web` | ◯ | ◯ | **React 版 Web UI** (Streamlit 版と同じ3タブ構成・同じ保存先。UI/UX を強化した別実装) |
 
 > 1ファイルに両トラックの QA が混ざっていても、`review` / `stats` は `--track` で表示対象を
 > 選べる (`general` | `kg_poc` | `all`、既定 `general`)。振り分けは `kg_query_type` /
 > `kg_novelty` がセットされているかどうかで判定する ([review_app.py:342-363](src/rageval/review_app.py#L342-L363))。
 > `review-kg` / `stats-kg` は `--track kg_poc` を固定した別名。
+
+### 既存 KG 起点の生成（推奨）
+
+KG が既に構築済みなら、無関係なチャンク対から関係を推測させず、経路を先に固定する。
+`kg-generate` は次の順で処理し、生成に使った経路を `QAItem.kg_path` に保存する。
+
+1. Neo4j から低ハブ・依存関係・出典チャンク非重複の2ホップ経路を読む
+2. 各辺の両端表記が `source_chunks` の原文にあるか確認する
+3. 生成とは別の `--provenance-model` で、述語の意味と向きまで原文が含意するか判定する
+4. [generate_kg_path.md](prompts/generate_kg_path.md) (`kg_path_v2.2`) でQAを作る
+5. 全辺の根拠チャンクが `rationale` に逐語引用されているか再照合する
+
+```bash
+uv run rageval kg-generate \
+  --chunks data/chunks_plant \
+  --out data/raw_kg/kg_covered \
+  --n 20 \
+  --provenance-model gpt-4.1-mini
+```
+
+`NEO4J_URI` / `NEO4J_USER` / `NEO4J_PW` が必要。KGへの書き込みは行わない。
+生成モデルと同じ判定モデルを指定するとCLIが警告する。誤り相関を避けるため、
+`KG_PROVENANCE_MODEL` または `--provenance-model` には別系統のモデルを推奨する。
 
 ---
 
@@ -396,18 +423,41 @@ rag_verification が無いデータを開いた場合は警告だけ出して何
 
 ---
 
+## React 版 Web UI (`rageval web`)
+
+Streamlit 版とは別に、同じデータ・同じ保存先 (`data/reviewed/<元ファイル名>`) を扱う
+React 製の統合 UI がある。タブは「レビュー (主作業)・一覧・分析」の3枚。
+データセットは **画面上で** 切り替えられ (起動し直し不要)、根拠の照合先チャンクは
+引用が一致する `data/chunks*` を自動判定する。レビューはキーボード操作
+(`A` 採用 / `E` 修正 / `R` 却下 / `N` 次の未判定 / `←→` 移動) に対応。
+
+```bash
+# 初回のみ: フロントエンドをビルド
+cd webui && npm install && npm run build && cd ..
+
+# 起動 (http://127.0.0.1:8765 が開く)
+uv run rageval web
+```
+
+セットアップ・オプション・画面の使い方・トラブルシュートは
+**[webui/README.md](webui/README.md)** を参照。実装は
+[src/rageval/webapi/](src/rageval/webapi/) (FastAPI) と [webui/](webui/) (Vite + React)。
+
+---
+
 ## 共通段: レビューUI 共通の振る舞い
 
-`review` / `review-kg` ([review_app.py](src/rageval/review_app.py)):
+`review` / `review-kg` / `stats` のレビュー画面 ([review_app.py](src/rageval/review_app.py) の `render_review_panel`):
 
-- 上部: qa_id / トラック / 主タグ / 検索・回答難易度 / レビューstatus
-- 左: 質問・回答 (Edit モードでテキストエリア化)
-- 右: アンカーチャンク (rationale を黄色ハイライト) + rationale ごとの逐語一致◯✗
-- 下部: トラック別チェックリスト (全てチェックで Accept ボタン解放) + Reject / Edit / Accept / Save snapshot
-- 折り畳み: 判定LLMスコア / 生 JSON
+- **上部ストリップ**: 進捗バー + 採用/修正/却下/未判定の集計 + 「未判定のみ表示」トグル + 「次の未判定へ」ボタン
+- **左ナビ**: 全問(または未判定のみ)のリスト。⚪🟢🔵🔴 のマーク付き、クリックで移動
+- **右本体**: ① 質問と回答 (修正モードでテキストエリア化) → ② 裏取り (アンカーチャンクを黄色ハイライト + rationale ごとの逐語一致 ✓✗) → ③ 減点式チェックリスト + 採用/修正/却下
+- **折り畳み**: 難易度根拠 / 判定LLMスコア / 生 JSON
 
-`--in` は glob 可。glob のときは最新一致ファイルを開く。
-書き戻し先は `data/reviewed/<元ファイル名>.jsonl`。
+判定は即座に `data/reviewed/<元ファイル名>.jsonl` へ保存され、次の問いへ進む。
+`--in` は glob 可 (最新一致ファイルを開く)。`stats` の3タブ版では画面のサイドバーから
+データセット・トラック・照合先チャンクを切り替えられる (照合先は「自動」で引用の一致する
+`data/chunks*` を選ぶ)。React 版 (`rageval web`) も同じ操作系・同じ保存先。
 
 ---
 
@@ -468,11 +518,14 @@ class QAItem:
   - [chunker.py](src/rageval/chunker.py) — 文書 → チャンク + 参照識別子抽出 + 任意の LLM パターン発見
   - [azure_di.py](src/rageval/azure_di.py) — Azure Document Intelligence (prebuilt-layout) ラッパー
   - [generate.py](src/rageval/generate.py) — Stage 1: QA 生成 (両トラック対応)
+  - [kg.py](src/rageval/kg.py) — 既存Neo4j KGの読み取り・経路抽出・辺の原文含意検証
+  - [generate_kg.py](src/rageval/generate_kg.py) — 検証済みKG経路 → QA生成 (`kg_path_v2.2`)
   - [sampling.py](src/rageval/sampling.py) — アンカーチャンク選択戦略
   - [filter.py](src/rageval/filter.py) — Stage 2: 判定LLM + 重複検知 + 逐語根拠検証
   - [probe.py](src/rageval/probe.py) — kg_poc 用 LLM プロービング
   - [review_app.py](src/rageval/review_app.py) — レビューUI (general / kg_poc の両モード)
   - [stats_app.py](src/rageval/stats_app.py) — ダッシュボード (general / kg_poc の両モード)
+  - [webapi/](src/rageval/webapi/) — React 版 Web UI のバックエンド (FastAPI: 読み込み・根拠照合・レビュー保存 API)
   - [aspects.py](src/rageval/aspects.py) — **general トラックの 25観点定義**
   - [tracks/kg_poc.py](src/rageval/tracks/kg_poc.py) — **kg_poc トラックの 3軸定義**
   - [schema.py](src/rageval/schema.py) — `QAItem` / `Chunk` などの型定義
@@ -481,8 +534,10 @@ class QAItem:
 - [prompts/](prompts/) — frontmatter 付き Markdown プロンプト
   - [generate.md](prompts/generate.md) — **general** 用生成プロンプト
   - [generate_kg_poc.md](prompts/generate_kg_poc.md) — **kg_poc** 用生成プロンプト
+  - [generate_kg_path.md](prompts/generate_kg_path.md) — **既存KG経路起点**の生成プロンプト
   - [judge.md](prompts/judge.md) — `[ANSWERABILITY]` / `[LEAKAGE]` / `[GROUNDING]` / `[DIFFICULTY_MATCH]` セクション分割 (両トラック共通)
   - [probe.md](prompts/probe.md) — `[PROBE]` + `[JUDGE_MATCH]` セクション (kg_poc 専用)
+- [webui/](webui/) — React 版 Web UI のフロントエンド (Vite + React + TypeScript)。マニュアルは [webui/README.md](webui/README.md)
 - [data/docs/](data/docs/) — 元文書 (gitignore)
 - [data/chunks/](data/chunks/) — チャンク済み JSONL (gitignore)
 - [data/seeds/seeds.json](data/seeds/seeds.json) — Gold Seed (人手で拡張する Few-Shot 用)

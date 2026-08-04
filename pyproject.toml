@@ -20,6 +20,11 @@ dependencies = [
     "altair>=5.3",
     "pypdf>=4.0",
     "azure-ai-documentintelligence>=1.0.0",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    # 既存 KG (Neo4j) を QA 生成の正解パス供給源として**読む**ために使う。
+    # 書き込みは行わない。
+    "neo4j>=5.20",
 ]
 
 [project.optional-dependencies]

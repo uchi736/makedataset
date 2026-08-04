@@ -384,3 +384,279 @@ def test_select_succeeds_for_remote_reference_within_doc():
     out = sampler.select("remote_reference", random.Random(0))
     assert out is not None and len(out) == 2
     assert sampler.difficulty_misses == {}
+
+
+# ---------------- v3: 文書スコープ規則 (誤結合対策) ----------------
+
+def test_reference_follow_rejects_bare_article_number_cross_doc(monkeypatch):
+    """裸の「第N条」一致だけでは異文書ペアを作らない (別法令の同番号は別物)。"""
+    import rageval.sampling as sampling
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", sampling.CrossDocPolicy())
+    a = _ch("law_a", 0, text="省令第63条に規定する適切な措置とは…", refs=["第63条"])
+    b = _ch("law_b", 0, text="様式第11（第63条関係）による申請書…")
+    out = ReferenceFollow(n=2, force_distinct_doc=True).select([a, b], None, random.Random(0))
+    assert len(out) == 1  # 相手が見つからず anchor 単独
+
+
+def test_reference_follow_allows_ledger_chunk_pair(monkeypatch):
+    """エッジ台帳に載っているチャンク対は裸番号でも成立 (解決済みエッジ)。"""
+    import rageval.sampling as sampling
+    a = _ch("law_a", 0, text="省令第63条に規定する…", refs=["第63条"])
+    b = _ch("law_b", 0, text="様式第11（第63条関係）…")
+    policy = sampling.CrossDocPolicy(
+        allowed_chunk_pairs={frozenset((a.chunk_id, b.chunk_id))}
+    )
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", policy)
+    out = ReferenceFollow(n=2, force_distinct_doc=True).select([a, b], None, random.Random(0))
+    assert {c.doc_id for c in out} == {"law_a", "law_b"}
+
+
+def test_reference_follow_allows_global_standard_cross_doc(monkeypatch):
+    """JIS 等の規格番号は全域一意なので異文書ペアの根拠になる (従来動作の維持)。"""
+    import rageval.sampling as sampling
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", sampling.CrossDocPolicy())
+    a = _ch("spec", 0, text="本ボルトは JIS B 1083 に従う", refs=["JIS B 1083"])
+    b = _ch("jis", 0, text="JIS B 1083 第3表: 締結トルク表")
+    out = ReferenceFollow(n=2, force_distinct_doc=True).select([a, b], None, random.Random(0))
+    assert {c.doc_id for c in out} == {"spec", "jis"}
+
+
+def test_reference_follow_same_doc_bare_number_still_works(monkeypatch):
+    """同一文書内なら裸の条番号で辿ってよい (本丸の遠隔参照)。"""
+    import rageval.sampling as sampling
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", sampling.CrossDocPolicy())
+    a = _ch("law_a", 0, text="第100条の規定を準用する", refs=["第100条"])
+    b = _ch("law_a", 20, text="第100条 省令第63条に規定する…")
+    out = ReferenceFollow(n=2, min_same_doc_gap=10).select([a, b], None, random.Random(0))
+    assert len(out) == 2 and {c.doc_id for c in out} == {"law_a"}
+
+
+def test_named_alias_allows_cross_doc(monkeypatch):
+    """相手文書を名称で名指ししている場合 (明示参照) は異文書ペア成立。"""
+    import rageval.sampling as sampling
+    a = _ch("kagi", 0, text="ボイラー則第百一条第二号ロ又はハに掲げる者", refs=["第101条"])
+    b = _ch("boiler_rule", 0, text="第百一条 一級ボイラー技士免許…")
+    policy = sampling.CrossDocPolicy(doc_aliases={"boiler_rule": ["ボイラー則"]})
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", policy)
+    assert policy.join_ok(a, b) is True
+    out = ReferenceFollow(n=2, force_distinct_doc=True).select([a, b], None, random.Random(0))
+    assert {c.doc_id for c in out} == {"kagi", "boiler_rule"}
+
+
+def test_multidoc_embedding_rejects_bare_number_cross_doc(monkeypatch):
+    """埋め込み類似 + 裸番号一致でも異文書ペアは成立しない。"""
+    import rageval.sampling as sampling
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", sampling.CrossDocPolicy())
+    chunks = [
+        _ch("law_a", 0, text="第63条の適切な措置", refs=["第63条"]),
+        _ch("law_b", 0, text="様式第11（第63条関係）", refs=["第63条"]),
+    ]
+    emb = np.array([[1.0, 0.0], [1.0, 0.0]])
+    strat = MultiDocByEmbedding(n=2, force_distinct_doc=True, require_article_overlap=True)
+    out = strat.select(chunks, emb, random.Random(0))
+    assert len(out) == 1
+
+
+def test_multidoc_embedding_same_doc_overlap_still_works(monkeypatch):
+    """同一文書内の参照番号重なりは従来どおり接続根拠になる。"""
+    import rageval.sampling as sampling
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", sampling.CrossDocPolicy())
+    chunks = [
+        _ch("law_a", 0, text="第63条の適切な措置", refs=["第63条"]),
+        _ch("law_a", 9, text="第63条に基づく手続", refs=["第63条"]),
+    ]
+    emb = np.array([[1.0, 0.0], [1.0, 0.0]])
+    strat = MultiDocByEmbedding(n=2, force_distinct_doc=False, require_article_overlap=True)
+    out = strat.select(chunks, emb, random.Random(0))
+    assert len(out) == 2
+
+
+def test_sampler_diversity_caps_doc_pair(monkeypatch):
+    """同一の異文書対からはバッチ内 MAX_PER_DOC_PAIR 問まで。使用済みチャンク組は再抽選。"""
+    import rageval.sampling as sampling
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", sampling.CrossDocPolicy())
+    chunks = [
+        _ch("d1", 0, text="JIS B 0001 による", refs=["JIS B 0001"]),
+        _ch("d1", 1, text="JIS B 0001 参照", refs=["JIS B 0001"]),
+        _ch("d2", 0, text="JIS B 0001 第1表", refs=["JIS B 0001"]),
+        _ch("d2", 1, text="JIS B 0001 第2表", refs=["JIS B 0001"]),
+    ]
+    emb = np.ones((4, 2)) / np.sqrt(2)
+    sampler = AnchorSampler(chunks, emb)
+    rng = random.Random(0)
+    sets = []
+    for _ in range(AnchorSampler.MAX_PER_DOC_PAIR):
+        out = sampler.select("multi_doc_reference", rng)
+        assert out is not None
+        # v3.1: select は候補を返すだけ。QA が通過したときに commit で確定する。
+        sampler.commit(out)
+        sets.append(frozenset(c.chunk_id for c in out))
+    assert len(set(sets)) == len(sets)  # 同じチャンク組は出ない
+    # 上限到達後は同じ文書対を返さない (None = skip)
+    out3 = sampler.select("multi_doc_reference", rng)
+    assert out3 is None
+    assert sampler.diversity_rejects > 0
+
+
+def test_uncommitted_anchor_can_be_reused():
+    """QA が棄却されたアンカー組は commit されないので枠を消費しない。"""
+    chunks = [
+        _ch("d1", 0, text="JIS B 0001 による", refs=["JIS B 0001"]),
+        _ch("d2", 0, text="JIS B 0001 第1表", refs=["JIS B 0001"]),
+    ]
+    emb = np.ones((2, 2)) / np.sqrt(2)
+    sampler = AnchorSampler(chunks, emb)
+    first = sampler.select("multi_doc_reference", random.Random(0))
+    assert first is not None
+    # commit しない = 生成が棄却された → もう一度同じ組が引ける
+    again = sampler.select("multi_doc_reference", random.Random(0))
+    assert again is not None
+    assert {c.chunk_id for c in again} == {c.chunk_id for c in first}
+
+
+def test_cross_capable_index_and_preference(monkeypatch):
+    """異文書対を作れるアンカーの索引化と優先抽選。"""
+    import rageval.sampling as sampling
+    a = _ch("law_a", 0, text="ボイラー則第百一条に掲げる者", refs=["第101条"])
+    b = _ch("law_b", 0, text="第百一条 一級ボイラー技士免許…", refs=["第1条"])
+    noise = [_ch("law_c", i, text=f"無関係{i}", refs=["第9条"]) for i in range(20)]
+    policy = sampling.CrossDocPolicy(doc_aliases={"law_b": ["ボイラー則"]})
+    policy.index_cross_capable([a, b] + noise)
+    assert a.chunk_id in policy.cross_capable_chunk_ids  # 明示参照側
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", policy)
+    # 優先抽選: 多数回引けば law_a アンカーの異文書ペアが安定して出る
+    strat = ReferenceFollow(n=2, force_distinct_doc=True)
+    rng = random.Random(0)
+    hit = sum(
+        1 for _ in range(30)
+        if {c.doc_id for c in strat.select([a, b] + noise, None, rng)} == {"law_a", "law_b"}
+    )
+    assert hit >= 10
+
+
+# ---------------- v3.1: 名指し接続のチャンク解決 ----------------
+
+def test_article_number_parses_all_notations():
+    from rageval.sampling import article_number
+    assert article_number("ボイラー則第百一条第二号ロ") == 101
+    assert article_number("技術基準解釈第１０７条第１項") == 107
+    assert article_number("第38条") == 38
+    assert article_number("第十五条") == 15
+    assert article_number("条番号なし") is None
+
+
+def test_resolve_named_target_picks_the_referenced_article():
+    """相手文書の全チャンクではなく、名指しされた条文のチャンクを選ぶ。"""
+    import rageval.sampling as sampling
+    anchor = _ch("law_a", 0, text="ボイラー則第百一条第二号ロ又はハに掲げる者")
+    right = _ch("boiler", 5, text="第百一条 一級ボイラー技士免許を受けるには…")
+    noise = [_ch("boiler", i, text=f"第{i}条 無関係な規定") for i in (1, 2, 3)]
+    pol = sampling.CrossDocPolicy(doc_aliases={"boiler": ["ボイラー則"]})
+    picked = pol.resolve_named_target(anchor, noise + [right])
+    assert picked is not None and picked.chunk_id == right.chunk_id
+
+
+def test_resolve_named_target_returns_none_when_article_absent():
+    """名指しの条番号が相手文書に無ければ、対を成立させない。"""
+    import rageval.sampling as sampling
+    anchor = _ch("law_a", 0, text="ボイラー則第百一条に掲げる者")
+    cands = [_ch("boiler", i, text=f"第{i}条 別の規定") for i in (1, 2)]
+    pol = sampling.CrossDocPolicy(doc_aliases={"boiler": ["ボイラー則"]})
+    assert pol.resolve_named_target(anchor, cands) is None
+
+
+def test_resolve_named_target_similarity_fallback():
+    """条番号が無い名指しは類似度で1点に絞る (下限未満なら不成立)。"""
+    import rageval.sampling as sampling
+    anchor = _ch("law_a", 0, text="詳細はボイラー則による")
+    c1 = _ch("boiler", 1, text="関係の薄い章")
+    c2 = _ch("boiler", 2, text="関係の濃い章")
+    pol = sampling.CrossDocPolicy(doc_aliases={"boiler": ["ボイラー則"]})
+    sim = lambda c: 0.9 if c.chunk_id == c2.chunk_id else 0.1  # noqa: E731
+    # 既定では類似フォールバックを使わない (「類似=関係」の再導入を防ぐ)
+    assert pol.resolve_named_target(anchor, [c1, c2], similarity=sim) is None
+    picked = pol.resolve_named_target(
+        anchor, [c1, c2], similarity=sim, allow_similarity_fallback=True)
+    assert picked is not None and picked.chunk_id == c2.chunk_id
+    # 明示的に有効化しても、全部下限未満なら None
+    assert pol.resolve_named_target(
+        anchor, [c1, c2], similarity=lambda c: 0.1,
+        allow_similarity_fallback=True) is None
+
+
+def test_reference_follow_named_join_resolves_to_one_chunk(monkeypatch):
+    """ReferenceFollow が相手文書の無関係チャンクを掴まないこと。"""
+    import rageval.sampling as sampling
+    anchor = _ch("law_a", 0, text="ボイラー則第百一条に掲げる者", refs=["第101条"])
+    right = _ch("boiler", 9, text="第百一条 一級ボイラー技士免許…")
+    noise = [_ch("boiler", i, text=f"第{i}条 無関係") for i in range(1, 6)]
+    pol = sampling.CrossDocPolicy(doc_aliases={"boiler": ["ボイラー則"]})
+    monkeypatch.setattr(sampling, "CROSS_DOC_POLICY", pol)
+    strat = ReferenceFollow(n=2, force_distinct_doc=True)
+    for seed in range(8):
+        out = strat.select([anchor, right] + noise, None, random.Random(seed))
+        if len(out) == 2:
+            assert out[1].chunk_id == right.chunk_id
+
+
+def test_normalize_rationale_ids_moves_chunk_id():
+    """doc_id 欄に書かれた chunk_id を chunk_id 欄へ移し、doc_id を正規化する。"""
+    from datetime import datetime
+    from rageval.evidence import normalize_rationale_ids
+    from rageval.schema import (
+        Explainability, GenerationInfo, QAItem, Rationale,
+        ReasoningComplexity, RetrievalDifficulty, SourceStructure,
+    )
+    qa = QAItem(
+        qa_id="q", question="Q?", answer="A",
+        rationale=[
+            Rationale(doc_id="09_kagi__c0118", page=None, text="t1"),
+            Rationale(doc_id="09_kagi", page=None, text="t2"),
+        ],
+        category=[], aspect=[], reasoning_complexity=ReasoningComplexity(),
+        retrieval_difficulty=RetrievalDifficulty(), source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level="Easy", answer_level="Easy", difficulty_rationale="x",
+        generation=GenerationInfo(model="m", prompt_version="v", generated_at=datetime.now()),
+    )
+    assert normalize_rationale_ids(qa) == 1
+    assert qa.rationale[0].doc_id == "09_kagi"
+    assert qa.rationale[0].chunk_id == "09_kagi__c0118"
+    # 同一文書の2チャンクなので「異文書」ではない
+    assert len({r.doc_id for r in qa.rationale}) == 1
+
+
+def test_sync_retrieval_difficulty_normalizes_doc_id():
+    """chunk_id を別文書と数えて multi_doc=True を誤付与しないこと。"""
+    from datetime import datetime
+    from rageval.answer_grounding import sync_retrieval_difficulty
+    from rageval.schema import (
+        Explainability, GenerationInfo, QAItem, Rationale,
+        ReasoningComplexity, RetrievalDifficulty, SourceStructure,
+    )
+    qa = QAItem(
+        qa_id="q", question="Q?", answer="A",
+        rationale=[
+            Rationale(doc_id="09_kagi__c0118", page=None, text="t1"),
+            Rationale(doc_id="09_kagi__c0520", page=None, text="t2"),
+        ],
+        category=[], aspect=[], reasoning_complexity=ReasoningComplexity(),
+        retrieval_difficulty=RetrievalDifficulty(multi_doc=True),
+        source_structure=SourceStructure(),
+        explainability=Explainability(evidence_strictness="hier-ref"),
+        retrieval_level="Hard", answer_level="Easy", difficulty_rationale="x",
+        generation=GenerationInfo(model="m", prompt_version="v", generated_at=datetime.now()),
+    )
+    sync_retrieval_difficulty(qa)
+    assert qa.retrieval_difficulty.multi_doc is False   # 同一文書
+    assert qa.retrieval_difficulty.multi_chunk is True  # チャンクは2つ
+
+
+def test_article_match_rejects_branch_numbered_articles():
+    """回帰: 「第56条」が「第56条の6の2」(別の条) に部分一致しないこと。
+    kg_missing 供給の偽参照 (2026-08-03 発覚) の再発防止。"""
+    from rageval.sampling import article_number, _ARTICLE_AFTER_ALIAS_RE
+    assert _ARTICLE_AFTER_ALIAS_RE.search("第五十六条の六の二第一項") is None
+    assert _ARTICLE_AFTER_ALIAS_RE.search("第五十六条に基づき") is not None
+    assert _ARTICLE_AFTER_ALIAS_RE.search("第56条の2") is None
+    assert _ARTICLE_AFTER_ALIAS_RE.search("第56条を準用") is not None

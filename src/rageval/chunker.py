@@ -45,6 +45,21 @@ _REFERENCE_RE = re.compile("|".join(f"(?:{p})" for p in _REFERENCE_PATTERNS))
 DISCOVERED_PATTERNS_PATH = Path("data/chunks/_discovered_patterns.json")
 
 
+def _read_text_ja(path: Path) -> str:
+    """日本語コーパス向けのテキスト読み込み。UTF-8 (BOM可) → CP932 の順で試す。
+
+    社内文書の .txt は Shift_JIS が珍しくないため、UTF-8 決め打ちだと
+    取り込み全体が落ちる。最後は置換読みで確実に返す。
+    """
+    raw = path.read_bytes()
+    for enc in ("utf-8-sig", "cp932"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _load_discovered_patterns() -> list[str]:
     """Load extra regex patterns previously discovered via discover_patterns()."""
     if not DISCOVERED_PATTERNS_PATH.exists():
@@ -297,30 +312,67 @@ def chunk_directory(
     out_dir.mkdir(parents=True, exist_ok=True)
     stats: dict[str, int] = {}
 
+    # 探索は再帰 (rglob) なのに doc_id は path.stem なので、サブディレクトリに
+    # 同名ファイルがあると JSONL も chunk_id も丸ごと衝突して後勝ちで上書きされる。
+    # doc_id を変えると既存 QA の rationale と繋がらなくなるため、doc_id は
+    # 変えずに衝突を検出して止める。
+    seen_stems: dict[str, Path] = {}
+    collisions: list[str] = []
+    for path in _iter_doc_files(docs_dir):
+        prev = seen_stems.get(path.stem)
+        if prev is not None:
+            collisions.append(f"{path.stem}: {prev} と {path}")
+        else:
+            seen_stems[path.stem] = path
+    if collisions:
+        raise RuntimeError(
+            "doc_id (ファイル名) が衝突しています。同じ doc_id のチャンクが"
+            "上書きされ、下流の照合が壊れます。ファイル名を変えるか、"
+            "ディレクトリを分けて別々に取り込んでください:\n  "
+            + "\n  ".join(collisions)
+        )
+
+    failed: dict[str, str] = {}
     for path in _iter_doc_files(docs_dir):
         doc_id = path.stem
         suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            if pdf_backend == "azure_di":
-                chunks = chunk_pdf_via_azure_di(
-                    path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
-                )
+        # 壊れた PDF 等が1つあっても取り込み全体は止めない。失敗は最後にまとめて報告。
+        try:
+            if suffix == ".pdf":
+                if pdf_backend == "azure_di":
+                    chunks = chunk_pdf_via_azure_di(
+                        path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                    )
+                else:
+                    chunks = chunk_pdf(
+                        path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                    )
             else:
-                chunks = chunk_pdf(
-                    path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                text = _read_text_ja(path)
+                chunks = chunk_text(
+                    text, doc_id,
+                    chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                    is_markdown=(suffix == ".md"),
                 )
-        else:
-            text = path.read_text(encoding="utf-8")
-            chunks = chunk_text(
-                text, doc_id,
-                chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-                is_markdown=(suffix == ".md"),
-            )
+        except Exception as e:
+            failed[path.name] = f"{type(e).__name__}: {e}"
+            continue
         out_path = out_dir / f"{doc_id}.jsonl"
         with out_path.open("w", encoding="utf-8") as f:
             for c in chunks:
                 f.write(c.model_dump_json() + "\n")
         stats[doc_id] = len(chunks)
+    if failed:
+        import sys
+        for name, err in failed.items():
+            print(f"  [chunk] 取り込み失敗 (スキップ): {name} — {err}", file=sys.stderr)
+        # 失敗した文書の JSONL は書き換えられないので、前回の内容が残り続ける。
+        # 古いチャンクが「今回の取り込み結果」として下流で使われないよう明示する。
+        stale = [n for n in failed if (out_dir / f"{Path(n).stem}.jsonl").exists()]
+        if stale:
+            print(f"  [chunk] WARNING: 失敗した文書の**前回のチャンクが残っています**: "
+                  f"{stale} — 内容が古い可能性があるので、不要なら削除してください",
+                  file=sys.stderr)
     return stats
 
 

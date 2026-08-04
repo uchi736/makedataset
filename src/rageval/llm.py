@@ -12,6 +12,8 @@ Backend selection:
 Env vars:
   - VLLM_ENDPOINT (fallback: VLLM_BASE_URL), VLLM_API_KEY, VLLM_TIMEOUT
   - VLLM_MODEL (optional default generator)
+  - VLLM_MODEL_ENDPOINTS (JSON object: モデル名 → base_url。生成と判定で別々の
+    vLLM サーバを使うときの振り分け表。未登録モデルは VLLM_ENDPOINT に落ちる)
   - AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION
   - AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
   - ANTHROPIC_API_KEY
@@ -123,7 +125,26 @@ def _azure_deployment_from_model(model: str) -> str:
     return model
 
 
-def _vllm_endpoint() -> str:
+def _vllm_model_endpoints() -> dict[str, str]:
+    """VLLM_MODEL_ENDPOINTS (JSON object) を読む。壊れた JSON は黙って無視しない。"""
+    raw = os.getenv("VLLM_MODEL_ENDPOINTS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("JSON object (モデル名 → base_url) が必要")
+        return {str(k): str(v) for k, v in data.items()}
+    except (json.JSONDecodeError, ValueError) as e:
+        raise LLMError(f"VLLM_MODEL_ENDPOINTS が不正です: {e}\n---\n{raw}") from e
+
+
+def _vllm_endpoint(model: Optional[str] = None) -> str:
+    """モデル名に対応する vLLM base_url。振り分け表に無ければ既定エンドポイント。"""
+    if model:
+        mapped = _vllm_model_endpoints().get(model)
+        if mapped:
+            return mapped
     return os.getenv("VLLM_ENDPOINT") or os.getenv(
         "VLLM_BASE_URL", "http://localhost:8000/v1"
     )
@@ -136,12 +157,14 @@ def _vllm_timeout() -> float:
 
 # ---------- backend implementations ----------
 
-# 流量制限 (429) は Azure 側の枠が 60 秒で回復するため、待ち上限を 60 秒まで
-# 伸ばして粘る。旧設定 (3回・最大10秒) では判定の連続呼び出しで枠を使い切ると
-# 再試行が尽きてバッチ全体が落ちていた。
+# 2026-08-03 縮小: 旧設定 (6回・待ち最大60秒) は Azure の 429 回復を待つための
+# もので、オンプレ vLLM ではハングした1コールが最悪30分に化けてバッチが
+# 「静かに止まる」原因になった (17時間無進捗の実測)。Azure は資格情報を
+# 無効化済みなので、オンプレ前提の短い再試行に戻す。落ちたら層別カウントに
+# 出る方が、粘って隠れるより良い。
 _RETRY_KWARGS = dict(
-    stop=stop_after_attempt(6),
-    wait=wait_exponential(multiplier=2, min=2, max=60),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
     retry=retry_if_exception_type(Exception),
     reraise=True,
 )
@@ -158,6 +181,7 @@ def _call_openai_compatible(
     json_mode: bool,
     system: Optional[str],
     timeout: float,
+    allow_thinking: bool = False,
 ) -> str:
     from openai import OpenAI
 
@@ -177,6 +201,15 @@ def _call_openai_compatible(
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if "qwen" in model.lower():
+        # Qwen3 系は既定で思考 (reasoning) し、判定1コールに数十秒かかるうえ
+        # max_tokens を思考が食い潰すと本文が空になる (2026-08-02 実測)。
+        # 既定は思考オフ。ただし委任連鎖の適用範囲判定など、思考無しでは
+        # 金看板素材を誤棄却する工程 (段1合成判定) だけ allow_thinking=True で
+        # 呼び出し側が明示的に有効化する。Gemma 等のテンプレートはこの kwarg を
+        # 参照しないため、他モデルには渡さない。
+        kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": bool(allow_thinking)}}
     resp = client.chat.completions.create(**kwargs)
     return resp.choices[0].message.content or ""
 
@@ -265,6 +298,9 @@ def generate(
     response_model: Optional[Type[T]] = None,
     force_json: bool = False,
     backend: Optional[str] = None,
+    # 思考型モデル (Qwen3 系) の思考を許可するか。既定 False (速度優先)。
+    # 委任連鎖の適用範囲判定など、思考無しで誤棄却が実測された工程だけ True。
+    allow_thinking: bool = False,
 ) -> Any:
     """Generate text (or a validated Pydantic object) from an LLM.
 
@@ -300,7 +336,7 @@ def generate(
             timeout=timeout,
         )
     else:  # vllm / openai-compatible
-        base_url = _vllm_endpoint()
+        base_url = _vllm_endpoint(model)
         api_key = os.getenv("VLLM_API_KEY", "EMPTY")
         text = _call_openai_compatible(
             prompt=prompt,
@@ -312,6 +348,17 @@ def generate(
             json_mode=json_mode,
             system=system,
             timeout=timeout,
+            allow_thinking=allow_thinking,
+        )
+
+    if not (text or "").strip():
+        # 思考型モデル (Qwen3 系) は reasoning が max_tokens を食い潰すと
+        # 本文が空のまま正常応答を返す (2026-08-02 実測: max_tokens=512 で全滅)。
+        # 空文字を呼び出し側に流すと「判定不能」が「不成立」等に化けるので
+        # ここで止める。
+        raise LLMError(
+            f"LLM が空の本文を返しました (model={model}, max_tokens={max_tokens})。"
+            "思考型モデルの思考が予算を使い切った可能性 — max_tokens を増やしてください"
         )
 
     if response_model is None:
@@ -326,24 +373,27 @@ def generate(
 
 # ---------- embeddings ----------
 
-def embed(
-    texts: list[str],
-    *,
-    model: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-    timeout: Optional[float] = None,
-) -> list[list[float]]:
-    """Embed a batch of texts via a vLLM-hosted OpenAI-compatible endpoint.
+def _resolve_embedding_backend(model: Optional[str], explicit: Optional[str]) -> str:
+    """埋め込みバックエンド選択。chat の _resolve_backend と揃える。
 
-    Defaults read from VLLM_EMBEDDING_ENDPOINT / VLLM_EMBEDDING_MODEL.
+    優先順位: 明示引数 > model の "azure/" 接頭辞 > EMBEDDING_PROVIDER 環境変数
+    > 既定 "vllm"。
     """
-    from openai import OpenAI
+    if explicit:
+        return explicit
+    if model and model.startswith("azure/"):
+        return "azure"
+    prov = os.getenv("EMBEDDING_PROVIDER")
+    if prov:
+        return prov.strip().lower()
+    return "vllm"
 
-    base_url = base_url or os.getenv("VLLM_EMBEDDING_ENDPOINT") or _vllm_endpoint()
-    model = model or os.getenv("VLLM_EMBEDDING_MODEL", "cl-nagoya/ruri-v3-310m")
-    api_key = api_key or os.getenv("VLLM_API_KEY", "EMPTY")
-    timeout = timeout if timeout is not None else _vllm_timeout()
+
+@retry(**_RETRY_KWARGS)
+def _call_openai_embeddings(
+    texts: list[str], model: str, base_url: str, api_key: str, timeout: float,
+) -> list[list[float]]:
+    from openai import OpenAI
 
     client = OpenAI(
         base_url=base_url, api_key=api_key, timeout=timeout,
@@ -351,3 +401,61 @@ def embed(
     )
     resp = client.embeddings.create(model=model, input=texts)
     return [d.embedding for d in resp.data]
+
+
+@retry(**_RETRY_KWARGS)
+def _call_azure_embeddings(
+    texts: list[str], deployment: str, timeout: float,
+) -> list[list[float]]:
+    from openai import AzureOpenAI
+
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+    if not (endpoint and api_key):
+        raise LLMError("AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY not set")
+
+    client = AzureOpenAI(
+        azure_endpoint=endpoint, api_key=api_key, api_version=api_version,
+        timeout=timeout, http_client=_http_client(timeout),
+    )
+    resp = client.embeddings.create(model=deployment, input=texts)
+    return [d.embedding for d in resp.data]
+
+
+def embed(
+    texts: list[str],
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout: Optional[float] = None,
+    backend: Optional[str] = None,
+) -> list[list[float]]:
+    """Embed a batch of texts (vLLM OpenAI-compatible or Azure OpenAI).
+
+    Backend selection (_resolve_embedding_backend):
+      - "azure": backend="azure", model が "azure/" 始まり、または
+                 EMBEDDING_PROVIDER=azure。deployment は model(接頭辞除去) →
+                 AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME の順で解決。
+      - "vllm":  既定。VLLM_EMBEDDING_ENDPOINT / VLLM_EMBEDDING_MODEL を使用。
+
+    base_url / api_key の明示指定は vLLM パスのみ有効 (Azure は環境変数から解決)。
+    """
+    timeout = timeout if timeout is not None else _vllm_timeout()
+    backend = _resolve_embedding_backend(model, backend)
+
+    if backend == "azure":
+        deployment = _azure_deployment_from_model(model) if model else None
+        deployment = deployment or os.getenv(
+            "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small"
+        )
+        return _call_azure_embeddings(texts, deployment=deployment, timeout=timeout)
+
+    # vllm / openai-compatible
+    base_url = base_url or os.getenv("VLLM_EMBEDDING_ENDPOINT") or _vllm_endpoint()
+    model = model or os.getenv("VLLM_EMBEDDING_MODEL", "cl-nagoya/ruri-v3-310m")
+    api_key = api_key or os.getenv("VLLM_API_KEY", "EMPTY")
+    return _call_openai_embeddings(
+        texts, model=model, base_url=base_url, api_key=api_key, timeout=timeout,
+    )

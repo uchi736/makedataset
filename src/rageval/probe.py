@@ -54,18 +54,24 @@ def probe_qa(
     probe_section: str,
     judge_section: str,
     llm: LLMCaller,
-) -> str:
-    """Return 'known' or 'unknown' for this QA."""
+) -> Optional[str]:
+    """この QA について 'known' / 'unknown' を返す。判定できなければ **None**。
+
+    2026-08-01: 以前は probe / judge が落ちたときも "unknown" を返していたため、
+    API 障害や JSON 崩れが「LLM が素で答えられない問い (= RAG 必須の良問)」と
+    同じラベルになっていた。障害は判定結果ではないので None (未実施) にする。
+    """
     # Step 1: Ask probe model to answer from weights alone
     probe_prompt = probe_section.replace("{question}", qa.question)
     try:
-        raw = llm(prompt=probe_prompt, model=probe_model, temperature=0.0, max_tokens=1024)
+        raw = llm(prompt=probe_prompt, model=probe_model, temperature=0.0, max_tokens=4096)
         candidate = _parse_json_safely(raw).get("answer", "").strip()
     except (LLMError, json.JSONDecodeError) as e:
-        print(f"[probe] {qa.qa_id} probe failed: {e}")
-        return "unknown"  # be conservative: assume unknown if probe broke
+        print(f"[probe] {qa.qa_id} probe failed (未判定): {e}")
+        return None
 
     if not candidate or candidate == "不明":
+        # モデル自身が「答えられない」と言った → 正真正銘の unknown
         return "unknown"
 
     # Step 2: Ask judge model whether candidate matches ground truth
@@ -75,14 +81,15 @@ def probe_qa(
         .replace("{candidate}", candidate)
     )
     try:
-        raw = llm(prompt=judge_prompt, model=judge_model, temperature=0.0, max_tokens=512)
+        raw = llm(prompt=judge_prompt, model=judge_model, temperature=0.0, max_tokens=4096)
         data = _parse_json_safely(raw)
         verdict = data.get("match", "").strip().lower()
         if verdict in ("known", "unknown"):
             return verdict
+        print(f"[probe] {qa.qa_id} judge returned unexpected verdict (未判定): {verdict!r}")
     except (LLMError, json.JSONDecodeError) as e:
-        print(f"[probe] {qa.qa_id} judge failed: {e}")
-    return "unknown"
+        print(f"[probe] {qa.qa_id} judge failed (未判定): {e}")
+    return None
 
 
 def probe_batch(
@@ -116,6 +123,7 @@ def probe_batch(
 
     n_known = 0
     n_unknown = 0
+    n_failed = 0
     for qa in qas:
         verdict = probe_qa(
             qa,
@@ -125,6 +133,11 @@ def probe_batch(
             judge_section=judge_section,
             llm=caller,
         )
+        if verdict is None:
+            # 判定できなかった。既存の値があれば壊さず残す (未実施のまま)。
+            n_failed += 1
+            print(f"[probe] {qa.qa_id} → 未判定")
+            continue
         qa.llm_knowledge = verdict  # type: ignore[assignment]
         if verdict == "known":
             n_known += 1
@@ -138,4 +151,7 @@ def probe_batch(
             f.write(qa.model_dump_json() + "\n")
 
     print(f"[probe] done: {n_known} known / {n_unknown} unknown → {out}")
+    if n_failed:
+        print(f"[probe] WARNING: {n_failed} 件が未判定のままです "
+              f"(llm_knowledge は None。unknown として数えないこと)")
     return out

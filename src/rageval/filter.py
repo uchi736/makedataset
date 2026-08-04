@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .chunker import load_chunks
+from .evidence import EvidenceIndex, grounded_fraction, match_rationales
 from .llm import LLMError, generate as llm_generate
 from .prompts import load_prompt
-from .schema import FilterScores, QAItem
+from .sampling import CrossDocPolicy, load_cross_doc_policy
+from .schema import Chunk, FilterScores, QAItem
 
 DEFAULT_PROMPT = "prompts/judge.md"
 
@@ -85,93 +87,95 @@ def _normalize_for_match(s: str) -> str:
     return _WS_RE.sub("", s)
 
 
-def compute_rationale_grounded(
-    qa: QAItem,
-    anchor_chunks: list[tuple[str, Optional[int], str]],
-) -> float:
-    """Return fraction of rationale entries whose .text appears verbatim (after
-    whitespace normalization) in some anchor chunk. 1.0 = all grounded."""
+def compute_rationale_grounded(qa: QAItem, chunks: list[Chunk]) -> float:
+    """引用のうち、**自分が名乗る文書の中で**逐語一致した割合。1.0 = 全件一致。
+
+    2026-08-01: 以前は全アンカーチャンクを連結した1本の文字列に対して部分一致を
+    取っていたため、(a) doc A の引用が doc B の本文にあるだけで一致になる、
+    (b) 連結の境目をまたいだ偶然一致が起きる、という2つの誤判定があった
+    (どちらも実データで再現)。照合は evidence.match_rationales に一本化する。
+    """
     if not qa.rationale:
         return 0.0
-    # Concatenate anchor chunk texts; LLM should quote from any of them
-    anchor_blob = "".join(_normalize_for_match(text) for _, _, text in anchor_chunks)
-    if not anchor_blob:
-        return 0.0
-    matched = 0
-    for r in qa.rationale:
-        needle = _normalize_for_match(r.text)
-        if needle and needle in anchor_blob:
-            matched += 1
-    return matched / len(qa.rationale)
+    return grounded_fraction(match_rationales(qa.rationale, chunks))
 
 
 def _find_chunk_texts(
     qa: QAItem,
-    chunk_index: dict[tuple[str, Optional[int]], list[str]],
-    full_chunks: list,
+    chunks: list[Chunk],
+    *,
+    index: Optional[EvidenceIndex] = None,
 ) -> list[tuple[str, Optional[int], str]]:
-    """Return one anchor chunk per rationale entry (deduped).
+    """判定LLM に見せるアンカーチャンクを引用ごとに1つずつ選ぶ (重複除去)。
 
-    同一 (doc_id, page) には複数チャンクがあり得る (PDF は1ページ最大6チャンク、
-    .txt は page=None で文書全体が同一キー)。候補を全部連結すると判定LLMへの
-    入力が文書まるごとに膨張するため、**rationale を逐語で含むチャンクを1つ選ぶ**。
-    含むものが無ければ先頭候補 (逐語照合は 0 になり正しく落ちる)。
-
-    Lookup strategy per rationale:
-      1. (doc_id, page) exact match
-      2. doc_id with chunk_id suffix stripped + page
-      3. chunk_id direct match (if rationale.doc_id is actually a chunk_id)
-      4. any chunk in the same normalized doc_id
+    照合は evidence.match_rationales に委譲する。**引用が名乗る文書の中でしか
+    探さない**ので、別文書のチャンクが根拠として提示されることはない。
+    引用を含むチャンクが無ければ同じ文書の先頭チャンク (逐語照合は 0 になり
+    正しく落ちる)。文書自体が見つからなければプレースホルダを返す。
     """
-    # Build chunk_id → (doc_id, page, text) for case 3
-    by_chunk_id: dict[str, tuple[str, Optional[int], str]] = {
-        c.chunk_id: (c.doc_id, c.page, c.text) for c in full_chunks
-    }
-    # Build doc_id → list of texts for case 4
-    by_doc: dict[str, list[str]] = {}
-    for c in full_chunks:
-        by_doc.setdefault(c.doc_id, []).append(c.text)
-
-    def _candidates(r) -> Optional[tuple[str, Optional[int], list[str]]]:
-        norm_doc = _normalize_doc_id(r.doc_id)
-        for doc, page in ((r.doc_id, r.page), (norm_doc, r.page)):
-            texts = chunk_index.get((doc, page))
-            if texts:
-                return doc, page, texts
-        if r.doc_id in by_chunk_id:
-            doc, page, text = by_chunk_id[r.doc_id]
-            return doc, page, [text]
-        if norm_doc in by_doc:
-            return norm_doc, r.page, by_doc[norm_doc]
-        return None
-
+    matches = match_rationales(qa.rationale, chunks, index=index)
     out: list[tuple[str, Optional[int], str]] = []
-    seen: set[tuple[str, Optional[int], int]] = set()
-
-    for r in qa.rationale:
-        found = _candidates(r)
-        if not found:
+    seen: set[str] = set()
+    for m in matches:
+        if m.chunk is None:
             continue
-        doc_id, page, texts = found
-        needle = _normalize_for_match(r.text)
-        best = next(
-            (t for t in texts if needle and needle in _normalize_for_match(t)),
-            texts[0],
-        )
-        key = (doc_id, page, hash(best))
-        if key not in seen:
-            out.append((doc_id, page, best))
-            seen.add(key)
+        if m.chunk.chunk_id not in seen:
+            out.append((m.chunk.doc_id, m.chunk.page, m.chunk.text))
+            seen.add(m.chunk.chunk_id)
+    return out or [("(unknown)", None, "(該当チャンクなし)")]
 
-    if out:
-        return out
-    # last-resort fallback
-    if qa.rationale:
-        target_doc = _normalize_doc_id(qa.rationale[0].doc_id)
-        for (doc_id, page), texts in chunk_index.items():
-            if doc_id == target_doc and texts:
-                return [(doc_id, page, texts[0])]
-    return [("(unknown)", None, "(該当チャンクなし)")]
+
+# ---------- 誤結合の機械検出 (決定論) ----------
+# plant_v15 で「別法令の第63条」「別法令の第7条」を同一視した捏造 QA が採用まで
+# 素通りした実害への対策。引用が複数文書に跨り、質問/回答中の文書ローカルな番号
+# (第N条・様式第N・別表第N) が両方の文書に別文脈で存在し、かつその文書対が
+# 文書スコープ規則 (エッジ台帳・規格番号・明示参照) で正当化されない場合に検出する。
+
+import unicodedata
+
+_LOCAL_NUM_TOKEN_RE = re.compile(
+    r"第[0-9]+条|様式第[0-9]+号?|別表第[0-9]+"
+)
+
+
+def _norm_ja(s: str) -> str:
+    """全角→半角 (NFKC) + 空白除去。番号トークンの表記揺れを吸収する。"""
+    return _WS_RE.sub("", unicodedata.normalize("NFKC", s))
+
+
+def _resolve_rationale_chunks(qa: QAItem, full_chunks: list[Chunk]) -> list[Chunk]:
+    """rationale ごとに、引用を逐語で含むチャンクを1つ選ぶ (無ければ同 doc の先頭)。"""
+    from .evidence import matched_chunks
+    return matched_chunks(match_rationales(qa.rationale, full_chunks))
+
+
+def detect_cross_doc_number_collision(
+    qa: QAItem,
+    full_chunks: list[Chunk],
+    policy: CrossDocPolicy,
+) -> Optional[str]:
+    """別文書の同番号条文を同一視した疑いを検出する。検出時は理由文字列を返す。"""
+    cited = _resolve_rationale_chunks(qa, full_chunks)
+    docs = {c.doc_id for c in cited}
+    if len(docs) < 2:
+        return None
+    qa_text = _norm_ja(qa.question + " " + qa.answer)
+    tokens = set(_LOCAL_NUM_TOKEN_RE.findall(qa_text))
+    if not tokens:
+        return None
+    texts = {c.chunk_id: _norm_ja(c.text) for c in cited}
+    for i in range(len(cited)):
+        for j in range(i + 1, len(cited)):
+            a, b = cited[i], cited[j]
+            if a.doc_id == b.doc_id:
+                continue
+            if policy.join_ok(a, b):
+                continue  # 台帳対・規格番号・明示参照で正当化された対
+            shared = [t for t in tokens if t in texts[a.chunk_id] and t in texts[b.chunk_id]]
+            if shared:
+                return (f"{a.doc_id}×{b.doc_id} が正当化されない対のまま "
+                        f"番号 {sorted(shared)} を共有")
+    return None
 
 
 # ---------- LLM-based scoring ----------
@@ -210,9 +214,16 @@ def score_qa(
     model: str,
     perspectives: dict[str, str],
     llm: LLMCaller,
-) -> FilterScores:
-    """Run each judge perspective and collate into FilterScores."""
+) -> tuple[FilterScores, list[str]]:
+    """判定観点ごとに judge を回して FilterScores にまとめる。
+
+    Returns (scores, failed) — failed は判定できなかった観点名の一覧。
+    「判定に失敗した」ことと「判定した結果スコアが低い」ことは意味が違うので、
+    呼び出し側が区別できるように失敗を明示的に返す (以前は失敗すると
+    スコアが None のまま残り、閾値判定を素通りして通過していた)。
+    """
     scores = FilterScores()
+    failed: list[str] = []
     for name in PERSPECTIVES:
         section = perspectives.get(name)
         if not section:
@@ -223,6 +234,7 @@ def score_qa(
             data = _parse_json_safely(raw)
         except (LLMError, json.JSONDecodeError) as e:
             print(f"[filter] judge {name} failed: {e}")
+            failed.append(name)
             continue
 
         if name == "ANSWERABILITY" and "answerability" in data:
@@ -238,22 +250,27 @@ def score_qa(
             # 宣言値 (生成時の暫定) と実態のズレをタグ化してから、実態で確定する。
             scores.difficulty_match = _difficulty_match(qa.answer_level, measured)
             qa.answer_level = measured
-    return scores
+        else:
+            # 呼び出しは成功したが期待した項目が無い/値が不正 → 判定不成立
+            print(f"[filter] judge {name} returned unusable payload: {str(data)[:120]}")
+            failed.append(name)
+    return scores, failed
 
 
 # ---------- duplicate detection ----------
 
-def _compute_uniqueness(qas: list[QAItem]) -> list[float]:
-    """Return max cosine similarity against any other QA in the batch (0..1).
+def _compute_uniqueness(qas: list[QAItem]) -> Optional[list[float]]:
+    """バッチ内の他 QA との最大コサイン類似度 (0..1) を返す。
 
-    Uses the vLLM-hosted embedding endpoint (VLLM_EMBEDDING_ENDPOINT +
-    VLLM_EMBEDDING_MODEL).
+    埋め込みが使えなかった場合は **None** を返す (「全件ユニーク」ではない)。
+    以前は失敗時に 0.0 を返しており、uniqueness=1.0 として重複判定が全件
+    素通りしていた。呼び出し側は None を「未実施」として扱うこと。
     """
     try:
         import numpy as np  # type: ignore
     except ImportError as e:
-        print(f"[filter] uniqueness skipped (numpy missing): {e}")
-        return [0.0] * len(qas)
+        print(f"[filter] uniqueness 未実施 (numpy missing): {e}")
+        return None
 
     from .llm import embed
 
@@ -261,8 +278,8 @@ def _compute_uniqueness(qas: list[QAItem]) -> list[float]:
     try:
         vectors = embed(texts)
     except Exception as e:
-        print(f"[filter] uniqueness skipped (embedding endpoint failed): {e}")
-        return [0.0] * len(qas)
+        print(f"[filter] uniqueness 未実施 (embedding endpoint failed): {e}")
+        return None
 
     emb = np.array(vectors, dtype=float)
     norms = np.linalg.norm(emb, axis=1, keepdims=True)
@@ -293,6 +310,10 @@ def filter_batch(
     require_rag_fail: bool = False,
     require_rag_hit: bool = False,
     require_rationale_retrieved: bool = False,
+    check_cross_doc_collision: bool = True,
+    anchor_pairs_path: Optional[Path] = Path("data/seeds/anchor_pairs_manual_v1.jsonl"),
+    doc_aliases_path: Optional[Path] = Path("data/seeds/doc_aliases.json"),
+    out_path: Optional[Path] = None,
 ) -> Path:
     """Score each QA with judge LLM + dedup, drop failures, write filtered JSONL."""
     # `--require-rag-fail` (answer_match != 'no_match' を落とす) と
@@ -307,14 +328,9 @@ def filter_batch(
     _, body = load_prompt(str(prompt_path))
     perspectives = _split_perspectives(body)
 
-    # Load and index chunks for per-QA lookup.
-    # 同一 (doc_id, page) の全チャンクを候補リストとして持ち、rationale を含む
-    # チャンクを _find_chunk_texts が選ぶ。連結で1本にすると .txt 文書
-    # (page=None) で文書全体に膨張し、判定LLMの入力が流量制限を突破する。
+    # Load and index chunks for per-QA lookup (evidence.EvidenceIndex に一本化)。
     chunks = load_chunks(chunks_dir) if chunks_dir.exists() else []
-    chunk_index: dict[tuple[str, Optional[int]], list[str]] = {}
-    for c in chunks:
-        chunk_index.setdefault((c.doc_id, c.page), []).append(c.text)
+    ev_index = EvidenceIndex.build(chunks)
 
     # Load QAs
     qas: list[QAItem] = []
@@ -326,20 +342,38 @@ def filter_batch(
 
     caller = llm or llm_generate
 
+    # v3: 誤結合検出用の文書スコープ規則 (generate と同じ台帳を読む)
+    policy = load_cross_doc_policy(anchor_pairs_path, doc_aliases_path) \
+        if check_cross_doc_collision else CrossDocPolicy()
+
     # Score each QA (LLM perspectives + deterministic rationale grounding)
+    collisions: dict[str, str] = {}
+    judge_failures: dict[str, list[str]] = {}
     for qa in qas:
-        anchor_chunks = _find_chunk_texts(qa, chunk_index, chunks)
-        qa.filter_scores = score_qa(
+        anchor_chunks = _find_chunk_texts(qa, chunks, index=ev_index)
+        qa.filter_scores, failed = score_qa(
             qa, anchor_chunks, model=judge_model, perspectives=perspectives, llm=caller
         )
+        if failed:
+            judge_failures[qa.qa_id] = failed
         # Deterministic check: does rationale.text actually appear in the chunks?
-        qa.filter_scores.rationale_grounded = compute_rationale_grounded(qa, anchor_chunks)
+        qa.filter_scores.rationale_grounded = compute_rationale_grounded(qa, chunks)
+        # Deterministic check: 別文書の同番号条文の誤結合
+        if check_cross_doc_collision and chunks:
+            hit = detect_cross_doc_number_collision(qa, chunks, policy)
+            if hit:
+                collisions[qa.qa_id] = hit
 
     # Compute uniqueness (1 - max similarity against other items)
+    uniqueness_done = True
     if compute_uniqueness and len(qas) > 1:
         sims = _compute_uniqueness(qas)
-        for qa, s in zip(qas, sims):
-            qa.filter_scores.uniqueness = 1.0 - float(s)
+        if sims is None:
+            # 埋め込みが使えなかった。全件ユニーク扱いにはしない (未実施のまま)。
+            uniqueness_done = False
+        else:
+            for qa, s in zip(qas, sims):
+                qa.filter_scores.uniqueness = 1.0 - float(s)
 
     # `--require-rag-*` 系は rag-verify 未実行時に全件 drop しないよう、
     # 1件でも rag_verification 持ちが居なければ警告を出して無視する。
@@ -371,11 +405,32 @@ def filter_batch(
         fs = qa.filter_scores
         rv = qa.rag_verification
         reasons: list[str] = []
-        if fs.answerability is not None and fs.answerability < answerability_min:
+        # decoy (棄権が正解) は answerability / leakage の観点が構造的に噛み合わない:
+        # 「この根拠から答えられるか」→ 答えられない、が正解なので低スコアが正しく、
+        # 落とすと系統ごと消える (2026-08-03 実測)。uniqueness と rationale_grounded
+        # (引用の逐語性) だけで見る。
+        is_decoy = (qa.kg_path is not None
+                    and getattr(qa.kg_path, "source", "") == "kg_decoy")
+        # 判定できなかったものは「合格」ではない。必須スコアが欠けていたら落とす。
+        # (以前は None が閾値比較を素通りし、judge 障害時に未判定の QA が
+        #  そのまま通過していた)
+        missing_scores = [
+            name for name, val in (
+                ("answerability", "skip" if is_decoy else fs.answerability),
+                ("grounding", "skip" if is_decoy else fs.grounding),
+                ("leakage", fs.leakage if (require_leakage_pass and not is_decoy) else "skip"),
+            ) if val is None
+        ]
+        if missing_scores:
+            reasons.append(f"unevaluated: {'/'.join(missing_scores)} が未判定 "
+                           f"(judge 失敗: {judge_failures.get(qa.qa_id, [])})")
+        if (not is_decoy and fs.answerability is not None
+                and fs.answerability < answerability_min):
             reasons.append(f"answerability={fs.answerability}")
-        if require_leakage_pass and fs.leakage == "fail":
+        if require_leakage_pass and not is_decoy and fs.leakage == "fail":
             reasons.append("leakage=fail")
-        if fs.grounding is not None and fs.grounding < grounding_min:
+        if (not is_decoy and fs.grounding is not None
+                and fs.grounding < grounding_min):
             reasons.append(f"grounding={fs.grounding}")
         if fs.uniqueness is not None and fs.uniqueness < (1.0 - uniqueness_max):
             reasons.append(f"uniqueness={fs.uniqueness:.3f}")
@@ -387,6 +442,8 @@ def filter_batch(
             reasons.append(f"rag_answer_match={rv.answer_match} (require no_match)")
         if require_rag_hit and rv is not None and rv.answer_match != "match":
             reasons.append(f"rag_answer_match={rv.answer_match} (require match)")
+        if qa.qa_id in collisions:
+            reasons.append(f"cross_doc_number_collision: {collisions[qa.qa_id]}")
         if require_rationale_retrieved and rv is not None:
             # 旧 JSONL は retrieval_hit_chunk が未設定 (既定 False) で書かれているので、
             # 当該フィールドが両方とも False かつ retrieval_hit (旧フィールド) が真のときは
@@ -403,10 +460,18 @@ def filter_batch(
 
     # Write filtered
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / raw_path.name
+    out_path = out_path or out_dir / raw_path.name
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         for qa in kept:
             f.write(qa.model_dump_json() + "\n")
 
     print(f"[filter] kept {len(kept)}/{len(qas)} QAs → {out_path}")
+    if judge_failures:
+        print(f"[filter] WARNING: judge が {len(judge_failures)} 件で失敗し、"
+              f"該当 QA は未判定として drop しました "
+              f"(内訳: {sorted({p for v in judge_failures.values() for p in v})})")
+    if not uniqueness_done and compute_uniqueness and len(qas) > 1:
+        print("[filter] WARNING: uniqueness 未実施のまま通過しています "
+              "(重複が残っている可能性あり — 埋め込みサーバを確認してください)")
     return out_path

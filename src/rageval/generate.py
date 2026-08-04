@@ -23,10 +23,13 @@ from .aspects import (
 from .chunker import load_chunks
 from .llm import LLMError, generate as llm_generate
 from .prompts import load_prompt, render
+from . import sampling as _sampling
+from .evidence import normalize_rationale_ids
 from .sampling import (
     AnchorSampler,
     compute_embeddings,
     compute_retrieval_difficulty,
+    load_cross_doc_policy,
     score_retrieval_level,
 )
 from .schema import Chunk, GenerationInfo, QAItem
@@ -210,12 +213,53 @@ def _render_generate_prompt(
     return render(prompt_body, variables)
 
 
+def _format_connection_block(anchors: list[Chunk]) -> str:
+    """チャンク間の接続根拠を列挙するブロック (v2.1)。
+
+    Gemma は2チャンクを並べただけでは接続を見つけられず片方に寄る
+    (rationale 単一doc スキップで全滅した実測あり)。接続根拠は選定時に
+    機械確認済みなので、発見をモデル任せにせずプロンプトで手渡す。
+    """
+    if len(anchors) < 2:
+        return ""
+    lines: list[str] = []
+    for i in range(len(anchors)):
+        for j in range(i + 1, len(anchors)):
+            a, b = anchors[i], anchors[j]
+            if a.doc_id == b.doc_id:
+                blob_b = b.text + " " + " ".join(b.section_path)
+                blob_a = a.text + " " + " ".join(a.section_path)
+                hits = [r for r in (a.references or []) if r in blob_b]
+                hits += [r for r in (b.references or []) if r in blob_a and r not in hits]
+                if hits:
+                    lines.append(
+                        f"- チャンク{i+1} ↔ チャンク{j+1}: 同一文書内の遠隔参照。"
+                        f"参照『{'、'.join(hits[:3])}』が互いの本文・章立てに現れる"
+                    )
+                else:
+                    lines.append(f"- チャンク{i+1} ↔ チャンク{j+1}: 同一文書内の遠隔チャンク")
+            else:
+                desc = _sampling.CROSS_DOC_POLICY.describe_join(a, b)
+                if desc:
+                    lines.append(f"- チャンク{i+1} ↔ チャンク{j+1}: {desc}")
+    if not lines:
+        return ""
+    return (
+        "# ★チャンク間の接続根拠 (選定時に機械確認済み — v2.1)\n\n"
+        + "\n".join(lines)
+        + "\n\n**この接続を問いの軸にすること。** 接続と無関係な2題を強引に繋がない。"
+        " 出力ではまず `connection` に上の接続を自分の言葉で1文にしてから question を書き、"
+        " rationale には**接続の両側 (各チャンク) から必ず1件ずつ**引用を入れること。"
+    )
+
+
 def _render_generate_prompt_kg(
     prompt_body: str, anchors: list[Chunk], spec: dict[str, Any], few_shot: list[dict]
 ) -> str:
     """KG-PoC variant: substitute kg_query_type / kg_novelty into prompt."""
     variables = {
         "anchor_chunks_block": _format_anchor_chunks_block(anchors),
+        "anchor_connection_block": _format_connection_block(anchors),
         "few_shot": json.dumps(few_shot, ensure_ascii=False, indent=2),
         "kg_query_type": spec["kg_query_type"],
         "kg_query_type_desc": spec["kg_query_type_desc"],
@@ -259,6 +303,8 @@ def generate_batch(
     seed: int = 42,
     llm: Optional[LLMCaller] = None,
     kg_mix: Optional[list[tuple[str, str, int]]] = None,
+    anchor_pairs_path: Optional[Path] = Path("data/seeds/anchor_pairs_manual_v1.jsonl"),
+    doc_aliases_path: Optional[Path] = Path("data/seeds/doc_aliases.json"),
 ) -> Path:
     """Generate a batch of QAs. `track` chooses between general / kg_poc.
 
@@ -286,12 +332,27 @@ def generate_batch(
     meta, body = load_prompt(str(prompt_path))
     prompt_version = meta.get("prompt_version", "unknown")
 
+    # v3: 文書スコープ規則 — 異文書対はエッジ台帳・規格番号・明示参照でのみ成立。
+    # 裸の「第N条」一致で別法令を繋ぐ誤結合 (plant_v15 で 3/25 混入) を素材段階で絶つ。
+    policy = load_cross_doc_policy(anchor_pairs_path, doc_aliases_path)
+    policy.index_cross_capable(chunks)
+    _sampling.CROSS_DOC_POLICY = policy
+    print(f"[generate] 文書スコープ規則: 台帳チャンク対 {len(policy.allowed_chunk_pairs)} 組 / "
+          f"別名台帳 {len(policy.doc_aliases)} 文書 / "
+          f"異文書対を作れるチャンク {len(policy.cross_capable_chunk_ids)} 箇所")
+
     embeddings = compute_embeddings(chunks)
     sampler = AnchorSampler(chunks, embeddings)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    # 秒まで含める + 既存があれば連番。分単位だと同じ分に2回流したとき
+    # 先行バッチを無言で全消ししていた ("w" は truncate)。
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"batch_{stamp}.jsonl"
+    seq = 1
+    while out_path.exists():
+        out_path = out_dir / f"batch_{stamp}_{seq}.jsonl"
+        seq += 1
 
     caller = llm or llm_generate
 
@@ -320,16 +381,25 @@ def generate_batch(
             # multi_hop) で sampler が単一 doc に縮退した場合は早期 skip。
             # こうしないと「multi-doc の問いを作れ」と LLM に頼んでも、anchor が1 doc
             # しか無いので物理的に成立せず、偽 traceability が量産される。
+            # 例外: reference_follow は本丸のチャンク単位化 (2026-07-01) 以降、
+            # 同一文書内でも遠隔 (位置差 >= 10) の参照ペアなら一級素材として通す。
+            # 文書スコープ規則の導入で異文書対の供給が正しく絞られたため、
+            # ここを塞いだままだと 09_kagi の遠隔参照 334 対が全部捨てられる。
             _MULTI_DOC_REQUIRED = {
                 "multi_doc_reference", "multi_source_integration", "multi_hop",
                 "reference_follow",  # kg_poc の unknown_relation/procedural_relation 系
             }
             if sampler_key in _MULTI_DOC_REQUIRED:
                 anchor_docs = {c.doc_id for c in anchors}
-                if len(anchor_docs) < 2:
+                same_doc_remote_ok = (
+                    sampler_key == "reference_follow"
+                    and len(anchors) >= 2
+                    and max(c.position for c in anchors) - min(c.position for c in anchors) >= 10
+                )
+                if len(anchor_docs) < 2 and not same_doc_remote_ok:
                     print(
                         f"[generate] skip ({sampler_key}): anchor が単一 doc に縮退 "
-                        f"(docs={sorted(anchor_docs)}) — 異 doc 跨ぎが作れず"
+                        f"(docs={sorted(anchor_docs)}) — 異 doc 跨ぎも遠隔参照も作れず"
                     )
                     continue
             few_shot = _sample_seeds(seeds_path, rng, k=3)
@@ -346,6 +416,9 @@ def generate_batch(
                     force_json=True, max_tokens=4096,
                 )
                 data = _coerce_to_dict(raw)
+                # v2.1: connection (接続の一文) はスキーマ外の足場。取り出して
+                # difficulty_rationale に残す (レビューUIで見える)。
+                connection = str(data.pop("connection", "") or "").strip()
                 # Stable qa_id: track-specific key
                 spec_key = spec.get("aspect") or spec.get("kg_query_type", "?")
                 data["qa_id"] = _stable_qa_id(data.get("question", ""), anchors, spec_key)
@@ -361,6 +434,14 @@ def generate_batch(
                     data["kg_query_type"] = spec["kg_query_type"]
                     data["kg_novelty"] = spec["kg_novelty"]
                 qa = QAItem.model_validate(data)
+                # 生成LLM は doc_id 欄に chunk_id (foo__c0012) を書くことがある。
+                # 保存前に正規化して chunk_id は本来の欄へ移す。歪んだまま保存すると
+                # 下流の doc 単位集計 (跨ぎ判定・multi_doc ラベル) が軒並み誤る。
+                normalize_rationale_ids(qa)
+                if connection:
+                    qa.difficulty_rationale = (
+                        f"接続根拠: {connection} / " + qa.difficulty_rationale
+                    ).strip(" /")
                 # 検索難易度は LLM の自己申告を使わず、チャンク組成から決定論的に確定。
                 qa.retrieval_level = score_retrieval_level(anchors)
                 qa.retrieval_difficulty = compute_retrieval_difficulty(anchors)
@@ -467,6 +548,8 @@ def generate_batch(
 
             f.write(qa.model_dump_json() + "\n")
             written += 1
+            # 全チェックを通過したので、このアンカー組を使用済みとして確定する
+            sampler.commit(anchors)
             if len(anchors) > 1:
                 doc_ids = "+".join(sorted({c.doc_id for c in anchors}))
                 tag = spec.get("aspect") or f"{spec.get('kg_query_type')}×{spec.get('kg_novelty')}"
@@ -481,6 +564,9 @@ def generate_batch(
         print("[generate] difficulty misses (コーパスが組成を作れず skip):")
         for asp, cnt in sorted(sampler.difficulty_misses.items(), key=lambda kv: -kv[1]):
             print(f"  {asp}: {cnt} (multi-chunk 組成を作れなかった)")
+    if sampler.diversity_rejects:
+        print(f"[generate] 分散制約による再抽選: {sampler.diversity_rejects} 回 "
+              f"(使用済みチャンク組・文書対上限 {AnchorSampler.MAX_PER_DOC_PAIR})")
     return out_path
 
 
