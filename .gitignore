@@ -33,3 +33,7 @@ node_modules/
 # Scratch logs and refs (session artifacts)
 _tmp_*.log
 _tmp_*.txt
+
+# PowerShell が誤生成するキャッシュ (作業ディレクトリ誤りで混入)
+Microsoft/
+**/Microsoft/Windows/
