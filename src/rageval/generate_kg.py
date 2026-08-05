@@ -354,8 +354,29 @@ def _check_exclusion_wording(ctx: CheckContext) -> Optional[str]:
 
 
 # 共通規則: 全ての型に適用。逐語・重複・無内容・造語。
+def _check_docid_leak(ctx: CheckContext) -> Optional[str]:
+    """質問・回答に内部の doc_id (ファイル名) が露出していないか。
+
+    実測 (2026-08-04 decoy): 質問文に `33_denji_kisoku` がそのまま出た。
+    実務者はファイル名を知らないので、出た時点で問いとして成立しない。
+    """
+    text = (ctx.qa.question or "") + (ctx.qa.answer or "")
+    ids = {c.doc_id for c in ctx.chunks_by_id.values()} if ctx.chunks_by_id else set()
+    for r in ctx.qa.rationale:
+        ids.add(r.doc_id)
+    hits = [d for d in ids if d and d in text]
+    if hits:
+        return f"内部ファイル名の露出: {hits[:3]}"
+    # 完全一致だけだと「v49n4_01（正式名）」のような前半だけの露出を逃す。
+    # ファイル名の接頭パターン (技報: vNNnN_NN / 法令: NN_ローマ字) も検出する
+    import re as _re
+    m = _re.search(r"v\d+n\d+_\d+|(?<![0-9A-Za-z])\d{2}_[a-z]+", text)
+    return f"内部ファイル名の露出 (接頭形): {m.group(0)}" if m else None
+
+
 COMMON_CHECKS: list[tuple[str, CheckFn]] = [
     ("根拠不適合", _check_rationale),
+    ("ファイル名露出", _check_docid_leak),
     ("関係文丸写し", _check_relation_echo),
     ("重複根拠", _check_cross_overlap),
     ("無内容回答", _check_vacuous),
@@ -699,6 +720,7 @@ def generate_from_paths(
     n_compose_rejected = 0      # 段1: 合成が成り立たない (素材不良)
     n_check_rejected = 0        # 段3: 検品落ち
     n_failed = 0                # 段2ほか: 生成不良 (通信・スキーマ)
+    n_consecutive_failures = 0  # サーバ容量超過等で全滅している徴候の検出
     with out_path.open("w", encoding="utf-8") as f:
         for i_path, path in enumerate(paths, 1):
             if i_path % 5 == 0:
@@ -707,13 +729,27 @@ def generate_from_paths(
             if max_items is not None and written >= max_items:
                 break
             # ---- 段0: 辺ごとの含意 ----
-            verified_edges = kg.verify_path_provenance(
-                path, texts, model=provenance_model, llm=provenance_llm,
-            )
+            try:
+                verified_edges = kg.verify_path_provenance(
+                    path, texts, model=provenance_model, llm=provenance_llm,
+                )
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
+                # 判定モデルの出力不良で経路1本を失うのは仕方ないが、
+                # バッチ全体を道連れにしない (2026-08-05: 迷子の { で全停止した)
+                print(f"[kg-generate] 段0判定失敗 (経路を跳ばす): {str(e)[:80]}")
+                n_failed += 1
+                n_consecutive_failures += 1
+                if n_consecutive_failures >= 10:
+                    # 10連続の失敗はサーバ側の障害/容量超過 (2026-08-05 実測:
+                    # :8001 が 260/269 で 503)。空振りで舐め切らず打ち切る
+                    print("[kg-generate] 10連続失敗 — サーバ障害とみなし打ち切り")
+                    break
+                continue
             if verified_edges is None:
                 n_provenance_rejected += 1
                 continue
             support = [edge.source_chunk_id for edge in verified_edges]
+            n_consecutive_failures = 0
 
             # ---- 段1: 合成判定 (判断だけ) ----
             try:
@@ -721,7 +757,7 @@ def generate_from_paths(
                     path, support, chunks_by_id,
                     model=provenance_model, llm=compose_llm,
                 )
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 合成判定失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -744,7 +780,7 @@ def generate_from_paths(
                     force_json=True, max_tokens=4096,
                 )
                 data = _coerce_to_dict(raw)
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 生成失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -840,7 +876,7 @@ def generate_from_stars(
                     star, verified, chunks_by_id,
                     model=provenance_model, llm=compose_llm,
                 )
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 合成判定失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -877,7 +913,7 @@ def generate_from_stars(
                     force_json=True, max_tokens=4096,
                 )
                 data = _coerce_to_dict(raw)
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 生成失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -964,7 +1000,7 @@ def generate_from_exclusions(
                     model=provenance_model, llm=compose_llm,
                     prompt_path=Path(COMPOSE_EXCLUSION_PROMPT),
                 )
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 除外判定失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -986,7 +1022,7 @@ def generate_from_exclusions(
                     force_json=True, max_tokens=4096,
                 )
                 data = _coerce_to_dict(raw)
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 生成失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -1179,7 +1215,7 @@ def generate_from_references(
                     # (2026-08-03)。僅少系統に限り思考を許可する
                     allow_thinking=True,
                 )
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 合成判定失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -1205,7 +1241,7 @@ def generate_from_references(
                     force_json=True, max_tokens=4096,
                 )
                 data = _coerce_to_dict(raw)
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 生成失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -1298,6 +1334,13 @@ def find_decoy_pairs(
                 # (2026-08-04: 本番ベンチで KG-ON の急所と実証された型)
                 if abs(chunks[i].position - chunks[j].position) < 30:
                     continue
+                # 同じ章・節に属する対は除外 — 同じ別表の行同士のような
+                # 「実は関係のある対」を掴む (実測: SUS材の表の行2つを
+                # 無関係と誤認し、引用と矛盾する棄権回答を生成した)
+                si = chunks[i].section_path[0] if chunks[i].section_path else ""
+                sj = chunks[j].section_path[0] if chunks[j].section_path else ""
+                if si == sj:
+                    continue
             cand.append((float(row[j]), i, j))
     cand.sort(reverse=True)
 
@@ -1374,7 +1417,7 @@ def generate_from_decoys(
                     path, support, chunks_by_id,
                     model=provenance_model, llm=compose_llm,
                 )
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 判定失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
@@ -1399,7 +1442,7 @@ def generate_from_decoys(
                     force_json=True, max_tokens=4096,
                 )
                 data = _coerce_to_dict(raw)
-            except (LLMError, json.JSONDecodeError) as e:
+            except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 print(f"[kg-generate] 生成失敗: {type(e).__name__}: {e}")
                 n_failed += 1
                 continue

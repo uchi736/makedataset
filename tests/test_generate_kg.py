@@ -184,7 +184,8 @@ def test_checks_table_multi_hop_keeps_frozen_rules():
     テーブル化で規則が落ちていないかの回帰。"""
     from rageval.generate_kg import CHECKS_BY_TYPE, COMMON_CHECKS
     common_names = [n for n, _ in COMMON_CHECKS]
-    assert common_names == ["根拠不適合", "関係文丸写し", "重複根拠", "無内容回答", "造語"]
+    assert common_names == ["根拠不適合", "ファイル名露出", "関係文丸写し",
+                            "重複根拠", "無内容回答", "造語"]
     mh_names = [n for n, _ in CHECKS_BY_TYPE["multi_hop"]]
     assert "中間露出" in mh_names and "構造" in mh_names
 

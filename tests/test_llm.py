@@ -169,3 +169,10 @@ def test_embed_defaults_to_vllm(monkeypatch):
     llm.embed(["y"])
     assert captured["model"] == "cl-nagoya/ruri-v3-310m"
     assert captured["base_url"] == "http://localhost:8003/v1"
+
+
+def test_parse_json_tolerates_stray_leading_brace():
+    """回帰: DeepSeek が JSON の前に迷子の '{' を吐いても抽出できること。"""
+    from rageval.llm import _parse_json
+    out = _parse_json('{\n{"entailed": false, "reason": "理由"}')
+    assert out == {"entailed": False, "reason": "理由"}

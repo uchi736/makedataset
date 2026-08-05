@@ -87,6 +87,13 @@ def _parse_json(text: str) -> Any:
     obj = _extract_first_json(text)
     if obj and obj not in candidates:
         candidates.append(obj)
+    # DeepSeek は JSON の前に迷子の「{」を1個吐くことがある (2026-08-05 実測:
+    # 「{ 改行 {"entailed": …}」)。オブジェクトの実開始 '{"' から釣り合いを取り直す。
+    start = text.find('{"')
+    if start > 0:
+        obj2 = _extract_first_json(text[start:])
+        if obj2 and obj2 not in candidates:
+            candidates.append(obj2)
     last_err: Exception | None = None
     for c in candidates:
         try:
@@ -201,6 +208,12 @@ def _call_openai_compatible(
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if "deepseek" in model.lower():
+        # DeepSeek V4 (vLLM) は response_format=json_object を送ると接続が切断される
+        # (2026-08-05 実測: 3/3 で APIConnectionError)。JSON はプロンプト指示 +
+        # 応答側の抽出に任せ、思考は reasoning_effort=low で短く抑える。
+        kwargs.pop("response_format", None)
+        kwargs["extra_body"] = {"reasoning_effort": "low"}
     if "qwen" in model.lower():
         # Qwen3 系は既定で思考 (reasoning) し、判定1コールに数十秒かかるうえ
         # max_tokens を思考が食い潰すと本文が空になる (2026-08-02 実測)。
