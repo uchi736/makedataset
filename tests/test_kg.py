@@ -128,3 +128,68 @@ def test_start_closure_single_edge_paths_pass():
     from rageval.kg import passes_start_closure
     path = KGPath(edges=[_edge(source_chunks=["c1"])])
     assert passes_start_closure(path, {"c1": "無関係"}) is True
+
+
+# ---------- 終端根拠の語彙断絶 (閉包チャンクと根拠チャンクの役割分離) ----------
+
+def _leaky_path() -> KGPath:
+    """終端辺に閉包チャンク (始点あり) と語彙断絶チャンク (始点なし) が両方ある経路。"""
+    return KGPath(edges=[
+        _edge(subject="温水ボイラー", object="水圧試験",
+              subject_forms=["温水ボイラー"], object_forms=["水圧試験"],
+              source_chunks=["start"]),
+        _edge(subject="水圧試験", object="最高使用圧力",
+              subject_forms=["水圧試験"], object_forms=["最高使用圧力"],
+              source_chunks=["closure", "clean"]),
+    ])
+
+
+_LEAK_TEXTS = {
+    "start": "温水ボイラーは、使用前に水圧試験を行わなければならない。",
+    "closure": "温水ボイラーの水圧試験は、最高使用圧力の1.5倍で行う。",
+    "clean": "水圧試験は、最高使用圧力の1.5倍の圧力で実施し、保持時間を記録する。",
+}
+
+
+def test_leak_free_terminal_chunks_excludes_closure_chunk():
+    """閉包チャンク (始点表記あり) は根拠候補から外れ、語彙断絶チャンクだけが残る。"""
+    from rageval.kg import leak_free_terminal_chunks
+    assert leak_free_terminal_chunks(_leaky_path(), _LEAK_TEXTS) == ["clean"]
+
+
+def test_leak_free_terminal_chunks_empty_when_all_candidates_leak():
+    """全候補に始点表記が漏れている経路は語彙断絶の根拠を持てない (素材として棄却)。"""
+    from rageval.kg import leak_free_terminal_chunks
+    texts = dict(_LEAK_TEXTS)
+    texts["clean"] = "温水ボイラーの水圧試験は最高使用圧力の1.5倍とする。"
+    assert leak_free_terminal_chunks(_leaky_path(), texts) == []
+
+
+def test_leak_free_terminal_single_edge_passes_through():
+    """1辺経路 (negation 等) には適用しない — 共起候補をそのまま返す。"""
+    from rageval.kg import leak_free_terminal_chunks
+    path = KGPath(edges=[_edge(source_chunks=["c1"])])
+    texts = {"c1": "設備Aは検査Bを必要とする。"}
+    assert leak_free_terminal_chunks(path, texts) == ["c1"]
+
+
+def test_verify_path_provenance_terminal_leak_free_picks_clean_chunk():
+    """段0が閉包チャンクでなく語彙断絶チャンクを終端の根拠に採ること。
+    素材列挙が leak-free 候補ありの経路だけを通しても、段0が閉包チャンクを
+    根拠に採れば質問語が正解チャンクに漏れる (2026-08-07 の実測に基づく回帰)。"""
+    def judge(**kwargs):
+        return {"entailed": True, "reason": "関係が明記されている"}
+
+    result = verify_path_provenance(
+        _leaky_path(), _LEAK_TEXTS, model="judge", llm=judge,
+        terminal_leak_free=True,
+    )
+    assert result is not None
+    assert result[-1].source_chunk_id == "clean"
+
+    # 既定 (フラグなし) は従来どおり閉包チャンクが先に採られる
+    result_default = verify_path_provenance(
+        _leaky_path(), _LEAK_TEXTS, model="judge", llm=judge,
+    )
+    assert result_default is not None
+    assert result_default[-1].source_chunk_id == "closure"

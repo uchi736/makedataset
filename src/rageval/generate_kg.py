@@ -681,6 +681,7 @@ def generate_from_paths(
     provenance_llm: Optional[LLMCaller] = None,
     max_items: Optional[int] = None,
     query_type_override: Optional[str] = None,
+    terminal_leak_free: bool = False,
 ) -> Path:
     """KG 経路を段0→段1→段2→段3 の順で処理し、通過した QA を書き出す。
 
@@ -688,6 +689,8 @@ def generate_from_paths(
     段2 (QA作成) だけを生成モデルで行う。
     query_type_override: 同じ2辺素材から別型を作るときに指定する
     (traceability は multi_hop と同素材で、問いの契約と検品だけが違う)。
+    terminal_leak_free: multi_hop のみ True。段0の終端辺候補を語彙断絶チャンク
+    (始点表記を含まないもの) に絞り、答えの根拠に質問語が漏れないようにする。
     """
     chunks = load_chunks(chunks_dir)
     chunks_by_id = {c.chunk_id: c for c in chunks}
@@ -732,6 +735,7 @@ def generate_from_paths(
             try:
                 verified_edges = kg.verify_path_provenance(
                     path, texts, model=provenance_model, llm=provenance_llm,
+                    terminal_leak_free=terminal_leak_free,
                 )
             except Exception as e:  # LLM出力不良に加え 503/接続断も1件の失敗として続行 (2026-08-05)
                 # 判定モデルの出力不良で経路1本を失うのは仕方ないが、

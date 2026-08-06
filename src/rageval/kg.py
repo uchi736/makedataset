@@ -231,6 +231,7 @@ def iter_two_hop_paths(
     intermediate_excluded_labels: frozenset = INTERMEDIATE_EXCLUDED_LABELS,
     terminal_excluded_labels: frozenset = TERMINAL_EXCLUDED_LABELS,
     chunk_texts: Optional[dict[str, str]] = None,
+    require_leak_free_terminal: bool = False,
     limit: int = 500,
 ) -> Iterator[KGPath]:
     """2辺の経路を、素材として使える条件つきで列挙する。
@@ -252,6 +253,9 @@ def iter_two_hop_paths(
         `pagerank` 下限をすり抜ける中程度のハブ (「実技講習」など) が
         ほぼ同一の経路を大量に出すので、ここで散らす
         (閉包などの検査は上限より先に掛け、落ちた経路が枠を食わないようにする)
+      - `require_leak_free_terminal=True` (multi_hop 素材のみ) で**終端根拠の語彙断絶**:
+        始点表記を含まない裏付け候補が終端辺に残る経路だけを通す
+        (leak_free_terminal_chunks。閉包と根拠の役割分離、2026-08-07)
     """
     per_mid: dict[str, int] = {}
     rows = sess.run(
@@ -278,6 +282,11 @@ def iter_two_hop_paths(
             PathEdge(r["b"], r["r2"], r["c"], list(r["sc2"] or []), r["ec2"], b_sf, c_sf),
         ])
         if chunk_texts is not None and not passes_start_closure(path, chunk_texts):
+            continue
+        # 語彙断絶 (multi_hop 素材のみ): 始点表記を含まない裏付け候補が終端辺に
+        # 1つも無い経路は、どのチャンクを根拠にしても質問語が正解に漏れる
+        if (require_leak_free_terminal and chunk_texts is not None
+                and not leak_free_terminal_chunks(path, chunk_texts)):
             continue
         mid = r["b"]
         if per_mid.get(mid, 0) >= max_per_intermediate:
@@ -329,7 +338,7 @@ def iter_star_groups(
     *,
     min_branches: int = 3,
     max_branches: int = 8,
-    max_position_spread: int = 50,
+    max_position_spread: Optional[int] = None,
     chunk_texts: Optional[dict[str, str]] = None,
     limit: int = 2000,
 ) -> Iterator[KGStar]:
@@ -339,10 +348,12 @@ def iter_star_groups(
       - 枝は依存・手続き・規範の関係 (`DEPENDENCY_RELATIONS`) の同型辺
       - 中心が Organization でない (「経済産業大臣が発する〜一覧」の書誌型を防ぐ)、
         値ノードでもない
-      - **全枝の出典が同一文書内かつ位置が近接** (`max_position_spread`)。
-        文脈混線の防止。別文書間の混線 (「学科講習」に複数講習の科目) だけでなく、
-        同一文書内でも起きる (実測例: 「許容引張応力」の星が別表の別々の行の脚注を
-        寄せ集めた。出典が c0302〜c0433 と131チャンク離れていた)
+      - **全枝の出典が同一文書内**。文脈混線 (「学科講習」に複数講習の科目が混ざる)
+        の機械的な防波堤はこれだけ残し、同一文書内の混線 (「許容引張応力」が別表の
+        別々の行を寄せ集めた実測例) の判定は段1の星合成判定に一本化する。
+        位置差 ≤50 の近接要求は撤廃 (2026-08-07): 素材が位置幅 1〜8 の隣接チャンクに
+        退化し、top10 被覆率 100% (v1 の 3/3) — 「検索で揃わない列挙」という型の
+        存在意義を機械フィルタが先に消していた。`max_position_spread` は実測比較用に残す
       - 枝の出典が2チャンク以上に分散 (1チャンクの列挙表なら vector RAG で足りる)
       - 枝が多すぎる星は extraction_count 上位 `max_branches` 本に絞る
         (問いとして列挙可能な規模に保つ。正解は網羅主張にしない前提)
@@ -390,10 +401,11 @@ def iter_star_groups(
         chunks_used = {c for e in edges for c in e.source_chunks}
         if len(chunks_used) < 2:
             continue
-        positions = [p for p in (_chunk_position(c) for c in chunks_used)
-                     if p is not None]
-        if positions and max(positions) - min(positions) > max_position_spread:
-            continue
+        if max_position_spread is not None:
+            positions = [p for p in (_chunk_position(c) for c in chunks_used)
+                         if p is not None]
+            if positions and max(positions) - min(positions) > max_position_spread:
+                continue
         emitted += 1
         yield KGStar(center=center, relation=rel, edges=edges)
 
@@ -524,6 +536,34 @@ def passes_start_closure(path: KGPath, chunk_text_by_id: dict[str, str]) -> bool
     return False
 
 
+def leak_free_terminal_chunks(
+    path: KGPath, chunk_text_by_id: dict[str, str],
+) -> list[str]:
+    """終端辺の裏付け候補のうち、始点の表記が現れないチャンク (語彙断絶の根拠候補)。
+
+    始点閉包 (passes_start_closure) は「始点表記が終端辺のどこかの裏付け候補に
+    現れること」を求めるが、その閉包チャンクをそのまま答えの根拠にすると、
+    始点を名指しする質問文が根拠チャンクに BM25 で直撃して検索で解ける問いになる
+    (covered 28問の実測 2026-08-07: 質問と終端の語彙重なり ≥0.55 は 8/8 が top10 到達、
+    不達4問は multi_hop に集中)。適用の証拠 (閉包) と答えの在り処 (根拠) を別チャンクに
+    分離し、根拠側は始点語彙を含まない候補に限る。1辺経路には適用しない。
+    """
+    from .evidence import normalize
+
+    candidates = candidate_support_chunks(path.edges[-1], chunk_text_by_id)
+    if len(path.edges) < 2:
+        return candidates
+    start = path.edges[0]
+    forms = [normalize(s) for s in (start.subject_forms or [start.subject])]
+    forms = [f for f in forms if len(f) >= 2]
+    out: list[str] = []
+    for cid in candidates:
+        text = normalize(chunk_text_by_id.get(cid, ""))
+        if text and not any(f in text for f in forms):
+            out.append(cid)
+    return out
+
+
 def verify_path(path: KGPath, chunk_text_by_id: dict[str, str]) -> Optional[list[str]]:
     """全ての辺で両端表記が共起するか。関係の検証には verify_path_provenance を使う。"""
     out: list[str] = []
@@ -613,15 +653,26 @@ def verify_path_provenance(
     *,
     model: str,
     llm: Optional[LLMCaller] = None,
+    terminal_leak_free: bool = False,
 ) -> Optional[list[EdgeVerification]]:
-    """全エッジについて、共起候補の少なくとも1件で関係まで確認する。"""
+    """全エッジについて、共起候補の少なくとも1件で関係まで確認する。
+
+    `terminal_leak_free=True` (multi_hop) では終端辺の候補を語彙断絶チャンク
+    (始点表記を含まないもの) に絞る。素材列挙が leak-free 候補ありの経路だけを
+    通していても、段0が閉包チャンクを根拠に採ってしまえば台無しになるため。
+    """
     verified: list[EdgeVerification] = []
     used_chunks: set[str] = set()
-    for edge in path.edges:
+    last_i = len(path.edges) - 1
+    for i, edge in enumerate(path.edges):
         accepted: Optional[EdgeVerification] = None
+        if terminal_leak_free and i == last_i and last_i >= 1:
+            candidates = leak_free_terminal_chunks(path, chunk_text_by_id)
+        else:
+            candidates = candidate_support_chunks(edge, chunk_text_by_id)
         # 候補は上位4件まで。抽出回数の多い辺は候補が20件を超え、全滅パターンで
         # 1辺に数分溶ける (2026-08-03 の17時間無進捗の一因)
-        for cid in candidate_support_chunks(edge, chunk_text_by_id)[:4]:
+        for cid in candidates[:4]:
             if cid in used_chunks:
                 continue
             accepted = verify_edge_relation(

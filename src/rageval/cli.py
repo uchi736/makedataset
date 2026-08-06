@@ -311,12 +311,15 @@ def kg_generate(
                 materials = find_missing_reference_pairs(all_chunks, policy, node_map)
                 typer.echo(f"[kg-generate] KG に対応の無い明示参照: {len(materials)} 対")
             else:   # multi_hop / traceability は同じ2辺素材
+                # multi_hop だけ終端根拠の語彙断絶を要求する (2026-08-07)。
+                # traceability は系譜の提示が契約で、検索困難性は狙わない
                 materials = list(kg_mod.iter_two_hop_paths(
                     sess,
                     min_extraction_count=min_extraction_count,
                     max_pagerank=max_pagerank,
                     max_per_intermediate=max_per_intermediate,
                     chunk_texts=texts,
+                    require_leak_free_terminal=(qt == "multi_hop"),
                     limit=path_limit,
                 ))
                 typer.echo(f"[kg-generate] 候補経路: {len(materials)} 本")
@@ -338,7 +341,7 @@ def kg_generate(
                                 prompt_path=Path(WRITE_TRACE_PROMPT),
                                 query_type_override="traceability")
         else:
-            generate_from_paths(materials, **common)
+            generate_from_paths(materials, **common, terminal_leak_free=True)
 
 
 @app.command()
