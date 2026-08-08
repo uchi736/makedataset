@@ -3,7 +3,8 @@
 Reads `.txt` and `.md` from a directory, splits with a recursive character-based
 strategy, and writes one JSONL of Chunks per file. For `.md`, the markdown
 heading stack at each chunk's position becomes `section_path`. For all files,
-references like "JIS Z 2241" / "第3章" / "別表2" are extracted into `references`.
+references like "JIS Z 2241" / "第3章" / "別表2" are extracted into `references`
+(番号は算用数字・全角・漢数字のいずれの表記でも拾い、原文の表記のまま残す)。
 """
 
 from __future__ import annotations
@@ -11,8 +12,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
+from .evidence import NUMERAL_CHARS, normalize_doc_id
 from .schema import Chunk
 
 DEFAULT_CHUNK_SIZE = 800
@@ -22,27 +24,72 @@ DEFAULT_CHUNK_OVERLAP = 100
 _SPLIT_PATTERNS = [r"\n\n+", r"(?<=[。．.!?！？])\s+", r"\n", r"\s+", r""]
 
 
+# ---------------- chunk_id の分解 (doc_id / position の正本は Chunk 側) ----------------
+# 正しい情報源は Chunk.doc_id / Chunk.position であって chunk_id の文字列ではない。
+# それでも chunk_id しか手元に無い箇所があるので、分解規則をここに1組だけ置く。
+# 各所で split("__") していたが、doc_id は利用者のファイル名 (path.stem) なので
+# 名前に "__" を含む2文書が同一文書に見える誤判定が起きていた (2026-08-08)。
+# 剥がすのは末尾の連番だけ (evidence.normalize_doc_id と同じ規則)。
+
+_CHUNK_ID_POSITION_RE = re.compile(r"__c(\d+)$")
+
+
+def doc_id_of(chunk_id: str) -> str:
+    """'a__b__c0012' → 'a__b'。末尾の連番だけを剥がす。"""
+    return normalize_doc_id(chunk_id)
+
+
+def position_of(chunk_id: str) -> int | None:
+    """'a__b__c0012' → 12。連番が付いていなければ None。"""
+    m = _CHUNK_ID_POSITION_RE.search(chunk_id or "")
+    return int(m.group(1)) if m else None
+
+
 # ---------------- Reference extraction ----------------
+# 番号は**原文の表記のまま**拾う。抽出した文字列は他チャンクの本文への逐語照合
+# (sampling._refs_in_text 等) にそのまま使われるので、算用数字へ揃えてしまうと
+# 漢数字の文書では逆に当たらなくなる。表記の違いは文字クラスで吸収する。
+# 2026-08-08: 算用数字だけを見ていたため、chunks_plant は 158 文書中 129 文書の
+# references が 0 件で、参照付きチャンクの 89.1% が算用数字表記の2文書に集中して
+# いた (ReferenceFollow と _has_any_reference の素材供給が実質その2文書に縮退)。
+
+_N = f"[{NUMERAL_CHARS}]"           # 半角/全角の算用数字 + 漢数字 (evidence が正本)
 
 _REFERENCE_PATTERNS: list[str] = [
     r"JIS\s*[A-Z]\s*\d{4}(?:-\d+)?",
     r"ISO\s*\d{4,5}(?:-\d+)?",
     r"IEC\s*\d{4,5}",
     r"ASME\s*[A-Z]+(?:\.\d+)?",
-    r"第\s*\d+\s*章",
-    r"第\s*\d+\s*節",
-    r"第\s*\d+\s*条",            # 法令・規定 (第15条 等)
-    r"第\s*\d+\s*項",            # 法令・規定 (第2項 等)
-    r"別表\s*\d+",
+    rf"第\s*{_N}+\s*章",
+    rf"第\s*{_N}+\s*節",
+    # 法令・規定 (第15条 / 第六十三条 等)。「第三条件」のような一般語を
+    # 参照と誤認しないよう、直後が「件」「目」のものは拾わない
+    rf"第\s*{_N}+\s*条(?!件)",
+    rf"第\s*{_N}+\s*項(?!目)",
+    rf"別表\s*第?\s*{_N}+",       # 「別表第七」形も拾う (旧実装は別表2 形のみ)
+    # 様式は「文書ローカルな番号」の仲間 (evidence.LOCAL_NUMBER_TOKEN_PATTERNS と
+    # 同じ族) なのに組み込みに無く、発見パターン台帳頼みで拾われていた
+    rf"様式\s*第?\s*{_N}+\s*号?",
     r"附属書\s*[A-Z]",
     r"\d+\.\d+(?:\.\d+)?\s*項",
 ]
 _REFERENCE_RE = re.compile("|".join(f"(?:{p})" for p in _REFERENCE_PATTERNS))
 
 
-# Path where corpus-discovered patterns are cached. The chunker auto-loads
-# this and ORs them into the built-in regex on each chunk_text() call.
-DISCOVERED_PATTERNS_PATH = Path("data/chunks/_discovered_patterns.json")
+# 発見パターンの台帳は**処理対象のチャンク置き場の直下**に置く。
+# 2026-08-08: 以前は data/chunks 固定を全呼び出しが暗黙に読み込んでおり、
+# (a) 実コーパスは chunks_plant / chunks_synth なので常に無効、(b) 台帳を置くと
+# 片方のコーパスで発見した規則がもう片方の references を書き換える、の両方が
+# 無警告で起きていた。読む側にも書く側にも置き場を引数で渡す。
+DISCOVERED_PATTERNS_FILENAME = "_discovered_patterns.json"
+
+# 旧配置 (読み込みの後方互換用。既定では誰も読まない)
+DISCOVERED_PATTERNS_PATH = Path("data/chunks") / DISCOVERED_PATTERNS_FILENAME
+
+
+def discovered_patterns_path(chunks_dir: Path) -> Path:
+    """発見パターン台帳の置き場 = そのチャンク置き場の直下。"""
+    return Path(chunks_dir) / DISCOVERED_PATTERNS_FILENAME
 
 
 def _read_text_ja(path: Path) -> str:
@@ -60,12 +107,13 @@ def _read_text_ja(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _load_discovered_patterns() -> list[str]:
-    """Load extra regex patterns previously discovered via discover_patterns()."""
-    if not DISCOVERED_PATTERNS_PATH.exists():
+def load_discovered_patterns(path: Path) -> list[str]:
+    """指定した台帳から追加の正規表現を読む。無ければ空 (暗黙の既定は持たない)。"""
+    path = Path(path)
+    if not path.exists():
         return []
     try:
-        data = json.loads(DISCOVERED_PATTERNS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
     out: list[str] = []
@@ -82,13 +130,17 @@ def _load_discovered_patterns() -> list[str]:
 
 
 def _build_reference_re(extra_patterns: list[str] | None = None) -> re.Pattern[str]:
-    """Compile built-in + discovered patterns into one regex."""
-    all_patterns = list(_REFERENCE_PATTERNS) + (extra_patterns or _load_discovered_patterns())
+    """Compile built-in + given patterns into one regex."""
+    all_patterns = list(_REFERENCE_PATTERNS) + list(extra_patterns or [])
     return re.compile("|".join(f"(?:{p})" for p in all_patterns))
 
 
 def extract_references(text: str, extra_patterns: list[str] | None = None) -> list[str]:
-    """Return unique references found in text, preserving discovery order."""
+    """Return unique references found in text, preserving discovery order.
+
+    発見パターンは**呼び出し側が渡す**。以前はここで台帳を暗黙に読んでいたため、
+    どのコーパスを処理していても同じ台帳が混ざり込んでいた。
+    """
     pattern = _build_reference_re(extra_patterns)
     seen: dict[str, None] = {}
     for m in pattern.finditer(text):
@@ -176,6 +228,7 @@ def chunk_text(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     is_markdown: bool = False,
+    extra_patterns: list[str] | None = None,
 ) -> list[Chunk]:
     """Split text into chunks. Markdown mode tracks heading stack per chunk."""
     sections: list[tuple[list[str], str]]
@@ -195,7 +248,8 @@ def chunk_text(
                 text=piece,
                 position=position,
                 section_path=list(section_path),
-                references=extract_references(piece + " " + " ".join(section_path)),
+                references=extract_references(
+                    piece + " " + " ".join(section_path), extra_patterns),
             ))
             position += 1
     return out
@@ -228,6 +282,7 @@ def chunk_pdf(
     *,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    extra_patterns: list[str] | None = None,
 ) -> list[Chunk]:
     """pypdf-based per-page text extraction + recursive split."""
     pages = _extract_pdf_pages(path)
@@ -244,7 +299,7 @@ def chunk_pdf(
                 text=piece,
                 position=position,
                 section_path=[],
-                references=extract_references(piece),
+                references=extract_references(piece, extra_patterns),
             ))
             position += 1
     return out
@@ -256,6 +311,7 @@ def chunk_pdf_via_azure_di(
     *,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    extra_patterns: list[str] | None = None,
 ) -> list[Chunk]:
     """Azure DI prebuilt-layout: produces markdown, then chunks per-section
     while tracking page numbers from PageBreak markers."""
@@ -280,7 +336,8 @@ def chunk_pdf_via_azure_di(
                     text=piece,
                     position=position,
                     section_path=list(section_path),
-                    references=extract_references(piece + " " + " ".join(section_path)),
+                    references=extract_references(
+                        piece + " " + " ".join(section_path), extra_patterns),
                 ))
                 position += 1
     return out
@@ -296,6 +353,7 @@ def chunk_directory(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     pdf_backend: PdfBackend = "auto",
+    patterns_path: Optional[Path] = None,
 ) -> dict[str, int]:
     """Chunk every text/markdown/pdf file in docs_dir, one JSONL per doc.
 
@@ -303,14 +361,26 @@ def chunk_directory(
       - "auto"     : Azure DI if env configured, else pypdf
       - "pypdf"    : force local pypdf
       - "azure_di" : force Azure DI (raises if env missing)
+    patterns_path:
+      発見パターンの台帳。既定は出力先の直下 (コーパスと台帳を1対1にする)。
     """
+    import sys
+
     from .azure_di import is_configured as _di_configured
 
     if pdf_backend == "auto":
         pdf_backend = "azure_di" if _di_configured() else "pypdf"
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    patterns_path = Path(patterns_path) if patterns_path else discovered_patterns_path(out_dir)
+    extra_patterns = load_discovered_patterns(patterns_path)
+    if extra_patterns:
+        print(f"  [chunk] 発見パターン {len(extra_patterns)} 件を適用: {patterns_path}")
     stats: dict[str, int] = {}
+    # 参照が1件も取れなかった文書は、この後の ReferenceFollow や
+    # _has_any_reference の素材から丸ごと外れる。無言で痩せると原因を追えないので
+    # 取り込みの最後に一覧で知らせる (2026-08-08)。
+    docs_without_refs: list[str] = []
 
     # 探索は再帰 (rglob) なのに doc_id は path.stem なので、サブディレクトリに
     # 同名ファイルがあると JSONL も chunk_id も丸ごと衝突して後勝ちで上書きされる。
@@ -341,11 +411,13 @@ def chunk_directory(
             if suffix == ".pdf":
                 if pdf_backend == "azure_di":
                     chunks = chunk_pdf_via_azure_di(
-                        path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                        path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                        extra_patterns=extra_patterns,
                     )
                 else:
                     chunks = chunk_pdf(
-                        path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                        path, doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                        extra_patterns=extra_patterns,
                     )
             else:
                 text = _read_text_ja(path)
@@ -353,6 +425,7 @@ def chunk_directory(
                     text, doc_id,
                     chunk_size=chunk_size, chunk_overlap=chunk_overlap,
                     is_markdown=(suffix == ".md"),
+                    extra_patterns=extra_patterns,
                 )
         except Exception as e:
             failed[path.name] = f"{type(e).__name__}: {e}"
@@ -362,8 +435,18 @@ def chunk_directory(
             for c in chunks:
                 f.write(c.model_dump_json() + "\n")
         stats[doc_id] = len(chunks)
+        if chunks and not any(c.references for c in chunks):
+            docs_without_refs.append(doc_id)
+    if docs_without_refs:
+        shown = docs_without_refs[:20]
+        more = f" ほか {len(docs_without_refs) - len(shown)} 件" if len(shown) < len(docs_without_refs) else ""
+        print(f"  [chunk] WARNING: 参照が1件も取れなかった文書 "
+              f"{len(docs_without_refs)}/{len(stats)}: {shown}{more} — "
+              f"参照を辿る素材 (ReferenceFollow・規格参照) がこれらの文書からは"
+              f"供給されません。参照の書式がコーパス固有なら "
+              f"`discover-patterns` で台帳を作って {patterns_path} に置いてください",
+              file=sys.stderr)
     if failed:
-        import sys
         for name, err in failed.items():
             print(f"  [chunk] 取り込み失敗 (スキップ): {name} — {err}", file=sys.stderr)
         # 失敗した文書の JSONL は書き換えられないので、前回の内容が残り続ける。
@@ -449,18 +532,32 @@ def discover_patterns(
     chunks: list[Chunk],
     *,
     model: str,
-    out_path: Path = DISCOVERED_PATTERNS_PATH,
+    out_path: Optional[Path] = None,
     max_chars: int = 12000,
     llm: object | None = None,
 ) -> list[dict]:
     """Use an LLM to discover corpus-specific reference patterns. Writes JSON
-    to `out_path` so subsequent `extract_references()` calls pick them up.
+    to `out_path`; `chunk_directory` reads the ledger sitting in its own output
+    directory, so out_path は**対象コーパスのチャンク置き場の直下**を渡すこと
+    (discovered_patterns_path(chunks_dir))。
 
     Returns the list of {regex, kind, example, rationale} dicts that were saved.
     Patterns that don't compile or that match nothing in the sample are dropped.
     """
+    import sys
     from datetime import datetime
     from .llm import LLMError, _parse_json, generate as llm_generate
+
+    if out_path is None:
+        # 置き場を指定しない呼び出しは、どのコーパスの台帳なのかが決まらない。
+        # 旧配置に書くが、そのままでは誰も読まないので警告する。
+        out_path = DISCOVERED_PATTERNS_PATH
+        print(f"  [chunker] WARNING: 台帳の置き場が指定されていません。旧配置 "
+              f"{out_path} に書きますが、chunk_directory はチャンク置き場直下の "
+              f"{DISCOVERED_PATTERNS_FILENAME} しか読みません "
+              f"(discovered_patterns_path(chunks_dir) を渡してください)",
+              file=sys.stderr)
+    out_path = Path(out_path)
 
     sample = _build_discovery_sample(chunks, max_chars=max_chars)
     if not sample:

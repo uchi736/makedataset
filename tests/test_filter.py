@@ -537,6 +537,46 @@ def test_collision_not_flagged_for_same_doc():
     assert detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy()) is None
 
 
+def test_collision_detected_for_kanji_article_numbers():
+    """回帰 (2026-08-08): 漢数字の条番号でも誤結合を検出する。
+
+    以前は NFKC + 空白除去だけの独自正規化だったため、条番号が漢数字支配の
+    実コーパス (chunks_plant で漢数字 4200 対 算用 1052) では検査が黙って
+    無反応になり、再発防止の対象そのもの (別法令の第63条の同一視) を
+    取りこぼしていた。実測 535 問で 17 件 → 29 件に増える。
+    """
+    from rageval.filter import detect_cross_doc_number_collision
+    from rageval.sampling import CrossDocPolicy
+    chunks = [
+        _mk_chunk("law_a", 0, "第百条 省令第六十三条に規定する適切な措置とは…"),
+        _mk_chunk("law_b", 0, "様式第十一（第六十三条関係）様式第十二（第六十三条関係）"),
+    ]
+    qa = _mk_qa_with_rationale([
+        ("law_a", "第百条 省令第六十三条に規定する適切な措置とは…"),
+        ("law_b", "様式第十一（第六十三条関係）"),
+    ])
+    # 質問文は算用数字、原文は漢数字という実際に多い組み合わせ
+    hit = detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy())
+    assert hit is not None and "第63条" in hit
+
+
+def test_collision_distinguishes_branch_article():
+    """枝番条文 (第63条の2) は第63条と別の規定なので同一視しない。"""
+    from rageval.filter import detect_cross_doc_number_collision
+    from rageval.sampling import CrossDocPolicy
+    chunks = [
+        _mk_chunk("law_a", 0, "第六十三条の二 に定める措置…"),
+        _mk_chunk("law_b", 0, "第六十三条 に定める免許…"),
+    ]
+    qa = _mk_qa_with_rationale([
+        ("law_a", "第六十三条の二 に定める措置…"),
+        ("law_b", "第六十三条 に定める免許…"),
+    ])
+    qa.question = "第63条の2に基づく措置は何か。"
+    qa.answer = "第63条の2の規定による。"
+    assert detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy()) is None
+
+
 def test_collision_not_flagged_without_shared_number():
     """番号を共有しない文書跨ぎ (技報同士の集約など) は検出しない。"""
     from rageval.filter import detect_cross_doc_number_collision
@@ -550,6 +590,74 @@ def test_collision_not_flagged_without_shared_number():
         ("rep_b", "誘引通風機の性能への影響が大きくなる"),
     ])
     assert detect_cross_doc_number_collision(qa, chunks, CrossDocPolicy()) is None
+
+
+# ---------------- judge.md の記述が実際に判定モデルへ渡ること ----------------
+
+def _spy_judge(seen: list[str]):
+    def _spy(*, prompt: str, **kwargs):
+        seen.append(prompt)
+        return _mock_judge_llm(prompt=prompt, **kwargs)
+    return _spy
+
+
+def _one_qa_dir(tmp_path: Path) -> tuple[Path, Path]:
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "sample.txt").write_text("定格電圧: DC 24V ±10%\n", encoding="utf-8")
+    chunks_dir = tmp_path / "chunks"
+    chunk_directory(docs_dir, chunks_dir)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    raw_path = raw_dir / "batch_test.jsonl"
+    raw_path.write_text(_make_qa("qa1", "定格電圧は？", "DC 24V").model_dump_json() + "\n",
+                        encoding="utf-8")
+    return raw_path, chunks_dir
+
+
+def test_judge_prompt_includes_shared_preamble(tmp_path: Path):
+    """回帰: judge.md の「# 共通前提」が判定モデルに渡ること (2026-08-08)。
+
+    観点の節しか抜き出しておらず、複数チャンクを1つの根拠として扱う指示も
+    JSON だけを返す契約も一度も渡っていなかった。プロンプトを直しても
+    何も変わらない状態だったので、前置きとして必ず載せる。
+    """
+    raw_path, chunks_dir = _one_qa_dir(tmp_path)
+    seen: list[str] = []
+    filter_batch(
+        raw_path=raw_path, out_dir=tmp_path / "filtered", chunks_dir=chunks_dir,
+        judge_model="mock", llm=_spy_judge(seen), compute_uniqueness=False,
+    )
+    assert seen
+    assert all("1つの根拠資料" in p for p in seen)
+    assert all("JSON" in p for p in seen)
+
+
+def test_judge_input_format_section_is_used_when_present(tmp_path: Path):
+    """`## [INPUT_FORMAT]` 節があれば入力の並びは .md 側を正本にする。"""
+    raw_path, chunks_dir = _one_qa_dir(tmp_path)
+    prompt_path = tmp_path / "judge_custom.md"
+    prompt_path.write_text(
+        "---\nprompt_version: test\n---\n\n"
+        "# 共通前提\n\nテスト用の共通前提。\n\n"
+        "## [ANSWERABILITY]\n\n1-5 で評価。\n\n"
+        "## [INPUT_FORMAT]\n\n"
+        "=== 設問 ===\n{question}\n=== 解 ===\n{answer}\n"
+        "=== 引用 ===\n{rationale}\n=== 原文 ===\n{chunk_text}\n",
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+    filter_batch(
+        raw_path=raw_path, out_dir=tmp_path / "filtered", chunks_dir=chunks_dir,
+        judge_model="mock", llm=_spy_judge(seen), compute_uniqueness=False,
+        prompt_path=prompt_path,
+    )
+    assert len(seen) == 1                     # INPUT_FORMAT は観点として回さない
+    prompt = seen[0]
+    assert "=== 設問 ===\n定格電圧は？" in prompt
+    assert "テスト用の共通前提。" in prompt
+    assert "{question}" not in prompt         # 差し込み口が残っていない
+    assert "定格電圧: DC 24V ±10%" in prompt   # 元チャンク本文が入っている
 
 
 # ---------------- v3: doc スコープ照合 (連結・取り違えの防止) ----------------

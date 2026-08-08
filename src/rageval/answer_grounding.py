@@ -23,7 +23,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from .evidence import normalize_doc_id
 from .llm import LLMError, _parse_json, generate as llm_generate
@@ -166,9 +166,73 @@ def is_all_docs_required(ag: AnswerGrounding) -> bool:
     return not any(ag.per_doc_sufficient.values())
 
 
-# leave-one-out で「全根拠必須」が不成立のときに降格対象となるクエリ型。
-# (single_fact は元々単一根拠の設計なので対象外)
-_DEMOTABLE_QUERY_TYPES = {"multi_hop", "traceability", "aggregation", "negation_exhaustive"}
+# ---------------- LOO 降格の可否 (型別定義表の1列) ----------------
+# 設計書「型別定義表」の LOO 列に対応する。降格の可否を型ごとに1箇所で持ち、
+# demote_single_unit / demote_if_not_required の両方がここだけを見る
+# (2026-08-08: 型リストが手書きで第4の型語彙になっており、型を足しても
+#  無言で降格対象から漏れていた)。
+# True = leave-one-out の結果しだいで single_fact へ降格してよい型。
+LOO_DEMOTABLE_BY_TYPE: dict[str, bool] = {
+    "single_fact":         False,  # 降格先そのもの
+    "multi_hop":           True,
+    "aggregation":         True,
+    "traceability":        True,
+    "negation_exhaustive": True,
+}
+
+# 降格を見送った履歴の見出し。同じ理由を何度も書き足さないための目印でもある。
+_SKIP_MARK = "[降格見送り"
+
+
+class LOODemotionPolicy(NamedTuple):
+    """LOO 降格を掛けてよいか、掛けない場合はその理由と記録の要否。"""
+
+    allowed: bool
+    reason: str = ""
+    # 型の仕様どおりに掛けなかった (single_fact 等) 場合は記録しない。
+    # 型と無関係な事情で掛けなかった場合だけ、後から理由を辿れるように残す。
+    record: bool = False
+
+
+def loo_demotion_policy(qa: QAItem) -> LOODemotionPolicy:
+    """この QA に leave-one-out の降格を掛けてよいかを型別表から決める。
+
+    KG 経路由来 (kg_path 付き) の QA は型が素材の構造で決まっており自己申告でない。
+    型の確定は実測を持つ rag_verify.certify_kg_items (認定ゲート) が行うので、
+    LOO では動かさない — 連鎖型は回答の固有値が終端チャンクに集中するため LOO が
+    始点側を「不要」と誤判定し (2026-08-01 実測 17/18)、negation_exhaustive は
+    除外条項1チャンクが正規の形なので単位1つでも実態と矛盾しない
+    (2026-08-04: v3 の negation 5問が single_fact に誤変換された事故)。
+    """
+    if qa.kg_path is not None:
+        return LOODemotionPolicy(
+            False,
+            "KG 経路由来のため LOO では型を動かさない (確定は rag-verify の認定ゲート)",
+            record=True,
+        )
+    qt = qa.kg_query_type
+    if qt is None:
+        # general トラックの QA。KG の型を持たないので降格の対象そのものが無い。
+        return LOODemotionPolicy(False, "kg_query_type が無い (KG-PoC トラック外)")
+    if qt not in LOO_DEMOTABLE_BY_TYPE:
+        # 型を足して表を直し忘れた場合。黙って対象外にせず理由を残す。
+        return LOODemotionPolicy(
+            False, f"LOO 降格可否の表に無い型 ({qt or '未設定'}) のため降格しない",
+            record=True,
+        )
+    if not LOO_DEMOTABLE_BY_TYPE[qt]:
+        return LOODemotionPolicy(False, f"{qt} は LOO 降格の対象外")
+    return LOODemotionPolicy(True)
+
+
+def _record_demotion_skipped(qa: QAItem, trigger: str, policy: LOODemotionPolicy) -> None:
+    """降格の条件は満たしたが掛けなかった、という判断を difficulty_rationale に残す。"""
+    if not policy.record or not policy.reason:
+        return
+    note = f"{_SKIP_MARK} {datetime.now():%Y-%m-%d}] {trigger}が、{policy.reason}"
+    if policy.reason in qa.difficulty_rationale:
+        return   # 再実行で同じ理由を積み上げない
+    qa.difficulty_rationale = (qa.difficulty_rationale + " / " + note).strip(" /")
 
 
 def demote_single_unit(qa: QAItem) -> bool:
@@ -176,15 +240,14 @@ def demote_single_unit(qa: QAItem) -> bool:
 
     leave-one-out は根拠単位が2つ以上ないと検査できないため、単位1つの
     multi_hop 表示はここで機械的に実態へ合わせる (決定論・LLM不要)。
+    掛けてよいかの判断は loo_demotion_policy (型別表) に委ねる。
     """
-    # KG 経路由来の QA は型が素材の構造で決まっており自己申告でない。
-    # 特に negation_exhaustive は除外条項1チャンクが正規の形なので、
-    # 「根拠単位が1つ=降格」の規則を適用しない (2026-08-04: v3 の negation
-    # 5問が single_fact に誤変換された事故で追加)。
-    if qa.kg_path is not None:
-        return False
     units = list(dict.fromkeys(r.evidence_unit() for r in qa.rationale))
-    if len(units) >= 2 or qa.kg_query_type not in _DEMOTABLE_QUERY_TYPES:
+    if len(units) >= 2:
+        return False
+    policy = loo_demotion_policy(qa)
+    if not policy.allowed:
+        _record_demotion_skipped(qa, "根拠単位が1つだった", policy)
         return False
     old = qa.kg_query_type
     qa.kg_query_type = "single_fact"
@@ -210,14 +273,8 @@ def demote_if_not_required(qa: QAItem) -> bool:
     single_fact に落ちていた。**必須単位が2つ以上残るなら型は維持**する。
     判定できなかった単位がある場合は降格しない (根拠不足のまま型を変えない)。
     降格の履歴は difficulty_rationale に残す。Returns True if demoted.
+    掛けてよいかの判断は loo_demotion_policy (型別表) に委ねる。
     """
-    # KG 経路由来の QA には LOO 降格を適用しない (2026-08-01, 実測 17/18 誤降格)。
-    # 連鎖型は回答の固有値が終端チャンクに集中する = 終端だけで回答が導出できる
-    # ため、LOO は始点側を「不要」と判定する。しかし始点側の価値は検索上の必要性
-    # (規定の所在の特定) であり、型の確定は rag-verify 後の
-    # rag_verify.sync_kg_query_type_from_retrieval (終端が top-k に直接入るか) が行う。
-    if qa.kg_path is not None:
-        return False
     ag = qa.answer_grounding
     if ag is None or not ag.per_doc_sufficient or len(ag.per_doc_sufficient) < 2:
         return False
@@ -226,7 +283,10 @@ def demote_if_not_required(qa: QAItem) -> bool:
     n_required = required_unit_count(ag)
     if n_required >= 2:
         return False  # 実態としてまだ複数根拠を要する
-    if qa.kg_query_type not in _DEMOTABLE_QUERY_TYPES:
+    policy = loo_demotion_policy(qa)
+    if not policy.allowed:
+        _record_demotion_skipped(
+            qa, f"leave-one-out で必要な根拠が {n_required} 件だった", policy)
         return False
     old = qa.kg_query_type
     qa.kg_query_type = "single_fact"

@@ -15,13 +15,24 @@ from __future__ import annotations
 import json
 import random
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Callable, Iterable, Optional, Protocol
 
 import numpy as np
 
 from .schema import Chunk, RetrievalDifficulty
+
+
+# ---------------- 台帳・種の置き場 (パスの正本) ----------------
+# 2026-08-08 監査 rank 30: 同じ台帳のパスが generate / filter / enrich / cli の
+# 6箇所に直書きされており、コーパスを替えて台帳を作り直すと「CLI 経由だけ新台帳・
+# 他は旧台帳」という食い違いが無警告で起きていた。台帳を読む側 (この module) に
+# 1組だけ置き、他 module はここか generate の別名を引く。
+SEEDS_DIR = Path("data/seeds")
+DEFAULT_ANCHOR_PAIRS_PATH = SEEDS_DIR / "anchor_pairs_manual_v1.jsonl"
+DEFAULT_DOC_ALIASES_PATH = SEEDS_DIR / "doc_aliases.json"
+DEFAULT_STANDARD_PREFIXES_PATH = SEEDS_DIR / "standard_prefixes.json"
 
 
 # ---------------- Aspect compatibility heuristics ----------------
@@ -97,7 +108,67 @@ def _refs_in_text(refs: set[str], text: str) -> bool:
 #   (b) 明示参照 — 相手文書の名称・別名を本文が名指ししている (doc_aliases 台帳)
 #   (c) 解決済みエッジ台帳 (seeds/anchor_pairs_manual_v1.jsonl) に載っているチャンク対
 
-_GLOBAL_REF_RE = re.compile(r"^(?:JIS|ISO|IEC|ASME|JPI|JEC|JEM|API|EN|NFPA)\b", re.IGNORECASE)
+# 規格団体の接頭辞はここが唯一の定義。異文書対の成立判定 (_is_global_ref) と
+# standards_reference 観点の適合述語 (_has_standards_ref) の両方をこの1組から作る。
+# 2026-08-08 監査 rank 27: 同一ファイル内に JIS|ISO|IEC|ASME だけの別実装があり、
+# JPI/JEC/JEM/API/EN/NFPA を含むチャンクが「規格共有で対を組んでよい」のに
+# 「規格参照ではない」と扱われる矛盾が既に起きていた。
+# 社内文書番号の体系に替えるときは data/seeds の台帳 (下の load_standard_prefixes)
+# で差し替える — コードを直さないと供給が消える状態にしない。
+DEFAULT_STANDARD_PREFIXES: tuple[str, ...] = (
+    "JIS", "ISO", "IEC", "ASME", "JPI", "JEC", "JEM", "API", "EN", "NFPA",
+)
+
+
+def _build_global_ref_re(prefixes: Iterable[str]) -> re.Pattern:
+    alts = "|".join(re.escape(p) for p in prefixes if p)
+    if not alts:
+        # 接頭辞が空だと「^(?:)\b」が全てに当たってしまう。全域一意な参照は
+        # 存在しない、と解釈できる正規表現にする。
+        return re.compile(r"(?!)")
+    return re.compile(rf"^(?:{alts})\b", re.IGNORECASE)
+
+
+STANDARD_PREFIXES: tuple[str, ...] = DEFAULT_STANDARD_PREFIXES
+_GLOBAL_REF_RE = _build_global_ref_re(STANDARD_PREFIXES)
+
+
+def set_standard_prefixes(prefixes: Iterable[str]) -> tuple[str, ...]:
+    """規格団体の接頭辞を差し替える (照合器を作り直す)。採用した集合を返す。"""
+    global STANDARD_PREFIXES, _GLOBAL_REF_RE
+    STANDARD_PREFIXES = tuple(dict.fromkeys(str(p).strip() for p in prefixes if str(p).strip()))
+    _GLOBAL_REF_RE = _build_global_ref_re(STANDARD_PREFIXES)
+    return STANDARD_PREFIXES
+
+
+def load_standard_prefixes(path: Optional[Path]) -> Optional[tuple[str, ...]]:
+    """台帳 (JSON の文字列配列) から規格接頭辞を読む。無ければ None。"""
+    if path is None or not Path(path).exists():
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        print(f"[sampling] 警告: 規格接頭辞の台帳が壊れている ({path}) — 既定を使う")
+        return None
+    if isinstance(data, dict):
+        data = data.get("prefixes", [])
+    if not isinstance(data, list) or not data:
+        print(f"[sampling] 警告: 規格接頭辞の台帳が空 ({path}) — 既定を使う")
+        return None
+    return tuple(str(x).strip() for x in data if str(x).strip())
+
+
+def apply_standard_prefixes(path: Optional[Path]) -> tuple[str, ...]:
+    """台帳があれば規格接頭辞を差し替え、実際に使う集合を返す。
+
+    台帳が無いのは異常ではない (既定の規格番号体系で回る) が、採用した集合は
+    必ず呼び出し側でログに出す — 異文書対の成立経路がここで決まるため。
+    """
+    loaded = load_standard_prefixes(path)
+    if loaded is None:
+        return STANDARD_PREFIXES
+    return set_standard_prefixes(loaded)
+
 
 # 「ボイラー則第百一条第二号ロ」のように、文書名の直後に来る条番号を拾う。
 # コーパスは漢数字 (02_boiler_anzen) と全角算用数字 (09_kagi) が混在する。
@@ -374,6 +445,13 @@ def load_cross_doc_policy(
       (各行 {"anchors": [{"chunk_id": ...}, ...]})。anchors 内の全2点組を許可対に登録。
     - aliases_path: {"doc_id": ["名称", "略称", ...]} の JSON。無ければ空。
     """
+    # 台帳が見つからないと規則が空になり、異文書対が「成立しない」側へ静かに倒れる
+    # (kg_decoy はラベルの意味が反転する)。無警告で空にしない (2026-08-08 監査 rank 30)。
+    for path, what in ((anchor_pairs_path, "解決済みエッジ台帳"),
+                       (aliases_path, "文書別名台帳")):
+        if path is not None and not Path(path).exists():
+            print(f"[sampling] 警告: {what}が見つからない ({path}) — "
+                  f"その規則は空のまま進む (異文書対は残る規則だけで成立させる)")
     pairs: set[frozenset] = set()
     if anchor_pairs_path and anchor_pairs_path.exists():
         with anchor_pairs_path.open("r", encoding="utf-8") as fh:
@@ -456,11 +534,14 @@ def _has_concept_diagram_marker(chunk: Chunk) -> bool:
     return _has_any(chunk.text, ["構成図", "ブロック図", "概念図", "組織図"]) or _has_any(chunk.text, _FIGURE_HINTS)
 
 
-_STANDARDS_RE = re.compile(r"^(?:JIS|ISO|IEC|ASME)")
-
-
 def _has_standards_ref(chunk: Chunk) -> bool:
-    return any(_STANDARDS_RE.match(r) for r in chunk.references)
+    """規格参照を持つチャンクか。判定は _is_global_ref (STANDARD_PREFIXES) に一本化。
+
+    2026-08-08 監査 rank 27: ここに JIS|ISO|IEC|ASME だけの2つ目の列挙があり、
+    JPI/JEC/JEM/API/EN/NFPA が「異文書対は組めるが規格参照ではない」という
+    矛盾した扱いを受けていた。
+    """
+    return any(_is_global_ref(r) for r in chunk.references)
 
 
 def _has_any_reference(chunk: Chunk) -> bool:
@@ -526,6 +607,12 @@ ASPECT_COMPATIBILITY: dict[str, Callable[[Chunk], bool]] = {
     "fragmented_chunk":         _always,
     # --- kg_poc 専用キー ---
     "reference_follow":         _has_any_reference,
+    # single_fact は1チャンクで完結する型なので素材を絞らない。
+    # 2026-08-08 監査 rank 25: 既存観点 "quantitative_calc" を流用していたため
+    # 互換述語 _has_numeric_calc が掛かり、アンカーが「数値2個以上+比較語」を含む
+    # チャンクだけに縮んでいた (実測 chunks_plant 3175→1407 / chunks_synth 330→59)。
+    # ASPECT_STRATEGIES には載せない = SingleChunk で1チャンクを引く。
+    "kg_single_fact":           _always,
 }
 
 
@@ -561,6 +648,8 @@ class SingleChunk:
 class SameDocRemote:
     n: int = 2
     min_position_gap: int = 3
+    # 同一文書内で組む戦略なので異文書跨ぎは要らない (generate 側の早期棄却の対象外)
+    requires_multi_doc: bool = False
 
     def select(self, chunks, embeddings, rng) -> list[Chunk]:
         # Group chunks by doc_id
@@ -597,6 +686,16 @@ class SameDocRemote:
 _SPECIFIC_REF_RE = re.compile(r"第\d+条|別表|附属書|第\d+章")
 
 
+# 同一文書内で「遠隔参照」と認める位置差の既定値。ReferenceFollow.min_same_doc_gap が
+# この値の唯一の置き場で、生成側の早期棄却 (generate) と難易度判定
+# (compute_retrieval_difficulty / score_retrieval_level) はここから引く。
+# 2026-08-08 監査 rank 15: 同じ 10 が3箇所に別々の直値で入っており、片方だけ動かすと
+# 「素材選びは通したのに生成が黙って捨てる」「生成は通すのに remote_reference=False で
+# 出荷される」というラベルと実体の食い違いが静かに起きていた。チャンク粒度の違う
+# コーパスでは位置差の意味自体が変わるので、set_min_same_doc_gap で動かせるようにする。
+DEFAULT_MIN_SAME_DOC_GAP = 10
+
+
 @dataclass
 class ReferenceFollow:
     n: int = 2
@@ -614,6 +713,9 @@ class ReferenceFollow:
     # 名指しに条番号が無いとき、埋め込み類似で参照先チャンクを推測してよいか。
     # 既定 False。「類似＝関係」を相手文書の中に持ち込み直すだけで検証手段が無い。
     allow_similarity_fallback: bool = False
+    # 異文書跨ぎが本質の用途か (kg_poc の関係系セル)。generate の早期棄却は
+    # この宣言を読むだけにする — 集合を手で写すと戦略を足したとき二重管理になる。
+    requires_multi_doc: bool = False
 
     def _same_doc_ok(self, anchor: Chunk, c: Chunk) -> bool:
         """同一 doc の target を採用してよいか。"""
@@ -725,6 +827,10 @@ class MultiDocByEmbedding:
     # 列挙しただけで本文を持たない目次的チャンク) なら除外する。
     # 09×45 の「条文本文 × 様式番号リスト」型デコイの素材を絶つため。
     exclude_list_chunks: bool = False
+    # 異文書跨ぎが本質の用途か。force_distinct_doc とは別建てにしてある:
+    # multi_source_integration / multi_hop は戦略としては同一文書での穴埋めを許す
+    # (fallback) が、生成の題としては跨ぎが要るため。
+    requires_multi_doc: bool = False
 
     def select(self, chunks, embeddings, rng) -> list[Chunk]:
         if embeddings is None or len(chunks) < self.n:
@@ -785,7 +891,9 @@ class MultiDocByEmbedding:
 # ---------------- Dispatch table ----------------
 
 ASPECT_STRATEGIES: dict[str, Strategy] = {
-    "multi_source_integration": MultiDocByEmbedding(n=3, force_distinct_doc=False, sim_floor=0.5),
+    "multi_source_integration": MultiDocByEmbedding(
+        n=3, force_distinct_doc=False, sim_floor=0.5, requires_multi_doc=True,
+    ),
     # force_distinct_doc=True needs a stricter floor: cross-doc pairs naturally
     # have lower similarity, but we'd rather emit a single-chunk fallback than
     # synthesize a nonsense cross-domain question.
@@ -802,22 +910,69 @@ ASPECT_STRATEGIES: dict[str, Strategy] = {
     "multi_doc_reference":      MultiDocByEmbedding(
         n=2, force_distinct_doc=True, sim_floor=0.50,
         require_article_overlap=True, exclude_list_chunks=True,
+        requires_multi_doc=True,
     ),
     "remote_reference":         SameDocRemote(n=2, min_position_gap=3),
     "standards_reference":      ReferenceFollow(n=2),
     "multi_hop":                MultiDocByEmbedding(
         n=2, force_distinct_doc=False, sim_floor=0.5,
         require_article_overlap=True, exclude_list_chunks=True,
+        requires_multi_doc=True,
     ),
     # kg_poc の関係系セル用: 実在する参照 (第N条→本文/別表) で繋がった2チャンク。
     # 埋め込み類似ペアは「似ているが関係が無い」問いを量産して判定で落ちるため、
     # 関係を問う組では参照辿りを使う。
-    # min_same_doc_gap=10: 本丸のチャンク単位化に伴い、同一文書内でも位置が
-    # 10 以上離れた遠隔参照ペアを許可 (一文書コーパスの条文参照が本丸素材になる)。
+    # min_same_doc_gap: 本丸のチャンク単位化に伴い、同一文書内でも位置が既定値
+    # 以上離れた遠隔参照ペアを許可 (一文書コーパスの条文参照が本丸素材になる)。
     "reference_follow":         ReferenceFollow(
-        n=2, prefer_specific=True, force_distinct_doc=True, min_same_doc_gap=10,
+        n=2, prefer_specific=True, force_distinct_doc=True,
+        min_same_doc_gap=DEFAULT_MIN_SAME_DOC_GAP, requires_multi_doc=True,
     ),
 }
+
+
+# ---------------- 戦略表から導く事実 (手書きの集合・直値を作らない) ----------------
+
+def multi_doc_required_aspects() -> set[str]:
+    """異文書跨ぎが必須の素材キーを戦略表から導く。
+
+    2026-08-08 監査 rank 26: この集合が generate の繰り返しの内側に手書きされており、
+    多文書戦略を足すと早期棄却をすり抜けて「2チャンクだが1文書」の偽の跨ぎ問題が
+    出荷され、逆に古いキーが残ると素材を過剰に捨てていた。
+    """
+    return {
+        key for key, strat in ASPECT_STRATEGIES.items()
+        if getattr(strat, "requires_multi_doc", False)
+    }
+
+
+def same_doc_gap_for(aspect: str) -> Optional[int]:
+    """素材キーが同一文書内の遠隔対を認めるなら、その位置差を返す (認めなければ None)。"""
+    return getattr(ASPECT_STRATEGIES.get(aspect), "min_same_doc_gap", None)
+
+
+def remote_reference_gap() -> int:
+    """難易度判定が「遠隔参照級」と数える位置差。素材選びと同じ値を使う。
+
+    素材側 (ReferenceFollow.min_same_doc_gap) と別値になると、素材として通した対が
+    remote_reference=False のまま出荷される (ラベルと実体の食い違い)。
+    """
+    gap = same_doc_gap_for("reference_follow")
+    return DEFAULT_MIN_SAME_DOC_GAP if gap is None else gap
+
+
+def set_min_same_doc_gap(gap: int) -> int:
+    """同一文書内の遠隔参照とみなす位置差を差し替える (素材選び・難易度判定に同時に効く)。
+
+    チャンク粒度の違うコーパスでは位置差の意味自体が変わるので、実行時に動かせる
+    ようにしておく。戻り値は採用した値 (呼び出し側でログに出すこと)。
+    """
+    if gap < 1:
+        raise ValueError(f"min_same_doc_gap は 1 以上 (指定値: {gap})")
+    strat = ASPECT_STRATEGIES.get("reference_follow")
+    if strat is not None:
+        ASPECT_STRATEGIES["reference_follow"] = replace(strat, min_same_doc_gap=gap)
+    return gap
 
 
 # ---------------- Retrieval difficulty scoring (deterministic) ----------------
@@ -825,8 +980,8 @@ ASPECT_STRATEGIES: dict[str, Strategy] = {
 # retrieval_level は LLM を介さず、anchors のトポロジだけで決まる。
 
 _LOW_LOCALITY_GAP = 3       # 同一文書で位置がこれ以上離れたら低局所性
-_REMOTE_GAP = 10            # さらに離れたら遠隔参照級 (Hard)
 _LARGE_CHUNK_CHARS = 1200   # チャンク単体が大きい
+# 遠隔参照級 (Hard) の位置差は remote_reference_gap() = 素材選びと同じ出所から引く。
 
 
 def _doc_count(anchors: list[Chunk]) -> int:
@@ -853,7 +1008,7 @@ def compute_retrieval_difficulty(anchors: list[Chunk]) -> RetrievalDifficulty:
         multi_doc=_doc_count(anchors) >= 2,
         multi_chunk=len(anchors) >= 2,
         low_locality=gap >= _LOW_LOCALITY_GAP,
-        remote_reference=gap >= _REMOTE_GAP,
+        remote_reference=gap >= remote_reference_gap(),
         doc_volume_large=False,  # 元文書総量は anchors からは判定不能
         chunk_size_large=any(len(c.text) >= _LARGE_CHUNK_CHARS for c in anchors),
         abstraction_discrepancy=False,
@@ -872,7 +1027,7 @@ def score_retrieval_level(anchors: list[Chunk]) -> str:
         return "Easy"
     if _doc_count(anchors) >= 2:
         return "Hard"
-    if _max_position_gap(anchors) >= _REMOTE_GAP:
+    if _max_position_gap(anchors) >= remote_reference_gap():
         return "Hard"
     return "Medium"
 

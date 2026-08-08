@@ -3,11 +3,22 @@
 aspect は QAItem.aspect: list[str] に入れる値。表記揺れを防ぐため Literal で
 列挙し、ASPECT_TO_CATEGORY でカテゴリへの逆引き、ASPECT_DESCRIPTIONS で抽象
 定義、ASPECT_EXAMPLES で現場の具体例(プロンプト/UIヒント用)を提供する。
+
+作問例 (ASPECT_GOOD_EXAMPLES / ASPECT_BAD_PATTERNS) だけは prompts/aspect_examples.md
+が正本 (2026-08-08 分離)。あれは観点の定義ではなく生成プロンプトの本文で、コードに
+置いていたために「作問の誘導を直すのに .py を触る・直しても prompt_version が動かず
+バッチを区別できない」状態だった。観点の ID・ラベル・定義はコード側に残す。
 """
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Literal, NamedTuple, get_args
+
+from rageval.prompts import load_prompt
 
 
 ASPECTS = Literal[
@@ -142,225 +153,113 @@ ASPECT_EXAMPLES: dict[str, str] = {
 }
 
 
-# 観点ごとの「✓ 良い問いの例」(プロンプトで作問を誘導する具体例)
-ASPECT_GOOD_EXAMPLES: dict[str, list[str]] = {
-    # --- Integration ---
-    "multi_source_integration": [
-        "第○章と第△章の規定を併せて読み解いた場合の××の取扱いを答えよ",
-        "親規定の制約と子規定の手順を統合した結論を答えよ",
-    ],
-    "multi_doc_reference": [
-        "仕様書と規格書の対応条文を参照して○○の結論を導け",
-        "上位規定の要件と下位規定の手順を併せて参照する必要のある問い",
-    ],
-    "remote_reference": [
-        "本文第○条が参照する別表△で、××に該当する項目を答えよ",
-        "附則で改訂された本文条項の現在の内容を、附則と本文を照合して答えよ",
-    ],
-    "standards_reference": [
-        "本文で参照される規格番号(例: JIS Z 2241)の規定内容を、本文の手順と紐づけて答えよ",
-        "規格番号で示された要件が本文のどの条項に対応するか答えよ",
-    ],
-    # --- Reasoning ---
-    "quantitative_calc": [
-        "月額○万円の労働者が時間外労働を△時間した場合の追加賃金額",
-        "年次有給休暇△日を取得した場合の残日数を計算せよ",
-    ],
-    "multi_hop": [
-        "条件Aを満たす場合の規定B、その例外Cを順に辿った最終的な取扱いを答えよ",
-        "第○条の対象→第△条の手順→第□条の例外を経由した結論",
-    ],
-    "negation": [
-        "本規定が適用されない条件を全て挙げよ",
-        "○○を除く対象に該当するのはどのような場合か",
-    ],
-    "causal": [
-        "△△が認められる根拠条文と、そう取り扱う理由を答えよ",
-        "○○の取扱いがそうなっている理由を文書から導いて答えよ",
-    ],
-    "temporal": [
-        "申請から実施までに要する所定期間と、その経過手順を答えよ",
-        "通知の必要日数と、間に合わない場合の代替手段の順序",
-    ],
-    "comparison_conditional": [
-        "正社員と契約社員における○○の取扱いの差を答えよ",
-        "業務都合と労働者都合の場合で△△の取扱いがどう変わるか",
-    ],
-    # --- Logic ---
-    "synonym_interpretation": [
-        "本規程の『所定労働時間』と『勤務時間』の関係を答えよ",
-        "△△と同義で使われている別の表現を本文中から特定し、対応する条項を答えよ",
-    ],
-    "numeric_inclusion": [
-        "年△日以上の範囲に含まれる条件と、その場合の取扱いを答えよ",
-        "月○時間超の労働に該当する場合の取扱いを答えよ",
-    ],
-    "concept_inclusion": [
-        "育児休業と介護休業の包含関係を、根拠条文と共に答えよ",
-        "年次有給休暇と特別休暇の上下関係(片方が他方を含むか)を答えよ",
-    ],
-    "vocabulary_mismatch": [
-        "『QMS』『FMEA』などの略語が本文中ではどの正式表記で書かれているか答えよ",
-        "略語と本文の正式表記の対応から、該当条項を特定せよ",
-    ],
-    "abstraction_gap": [
-        "『休暇制度の概要は』のような抽象的な問いに対し、本文の具体条項で答えよ",
-        "○○の方針について、本文の具体的手順を整理して答えよ",
-    ],
-    # --- Figure (素材が元チャンクに実在する場合のみ) ---
-    "simple_table": [
-        "表の中で○○の条件を満たす行を全て挙げよ",
-        "列Aの値が△を超える行において、列Bが示す値を答えよ",
-    ],
-    "complex_form": [
-        "セル結合で同一カテゴリに括られている項目を全て挙げよ",
-        "ヘッダ階層から、○○項目の上位カテゴリ名を答えよ",
-    ],
-    "concept_diagram": [
-        "構成図に示された A と B の関係性を答えよ",
-        "機器構成図から、○○の上流コンポーネントを答えよ",
-    ],
-    "flowchart": [
-        "フロー図のStep3で判断分岐がYesの場合、次に実行されるステップは",
-        "○○プロセスにおいて、決定権を持つステップを答えよ",
-    ],
-    "chart_graph": [
-        "グラフから最大値を示した年度を答えよ",
-        "○年と△年の値の差分を読み取って答えよ",
-    ],
-    "complex_layout": [
-        "サイドノートの注釈が本文○○についてどう補足しているか答えよ",
-        "段組み右側に置かれた条件と本文の規定の対応関係を答えよ",
-    ],
-    "large_enumeration": [
-        "列挙された項目のうち○○の条件を満たすものを全て挙げよ",
-        "○○に該当しない項目を抜き出して答えよ",
-    ],
-    # --- Abstention ---
-    "insufficient_evidence": [
-        "本文に存在しない情報(他社事例・最新法改正など)を要求する問い。回答は『本ドキュメントには該当する情報がありません』で始めること",
-        "文書では言及されていない一般常識を要求する問い",
-    ],
-    "contradictory_evidence": [
-        "旧版規程と新版規程で矛盾する記述がある場合、どちらが優先するか。回答は矛盾の存在を明示すること",
-        "複数箇所の記述が両立しない場合の取扱いを問う",
-    ],
-    "fragmented_chunk": [
-        "チャンク境界で途切れた条文の続きを推測する問い。回答は『チャンク末尾で記述が分断されている』ことを明示すること",
-        "ページまたぎ・章またぎで分断された記述を扱う問い",
-    ],
-}
+# 作問例 (✓ 良い問いの例 / ✗ 避けるべきパターン) の本文は prompts/aspect_examples.md。
+# ここに直書きしていた例は 2026-07-28 に退役したコーパス (就業規則・労務) の語彙で、
+# 対象が法令・規格とプラント技報へ移った後も残って作問を引っ張っていた。本文を
+# prompts 側へ出したので、以後は例文の差し替えでコードを触らない。
+ASPECT_EXAMPLES_PROMPT = "prompts/aspect_examples.md"
+
+# 既存の load_prompt は実行時の作業場所からの相対で読むが、作問例は UI・配信からも
+# 引かれ得るので、置き場に依存しない __file__ 起点を先に試す。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-# 観点ごとの「✗ 避けるべき問いのパターン」(LLM がよく逃げる trivial 形)
-ASPECT_BAD_PATTERNS: dict[str, list[str]] = {
-    # --- Integration ---
-    "multi_source_integration": [
-        "1チャンクだけ見れば答えられる単純抽出",
-        "複数情報源の統合が必要ない、片方の情報だけで完結する問い",
-    ],
-    "multi_doc_reference": [
-        "元チャンクが単一文書のみの場合は無理に作問しない。`insufficient_evidence` に倒すこと",
-        "1チャンクで完結する単純抽出",
-    ],
-    "remote_reference": [
-        "同じ条文内・同じセクション内で完結する問い",
-        "離れた箇所への参照が問いの解決に不要な問い",
-    ],
-    "standards_reference": [
-        "規格番号(JIS/ISO/IEC/ASME等)が元チャンクに無い場合は無理に作問しない。`insufficient_evidence` に倒すこと",
-        "規格番号を引用するだけで内容との対応が問われていない問い",
-    ],
-    # --- Reasoning ---
-    "quantitative_calc": [
-        "文書にそのまま書いてある数値を抽出するだけ(計算ステップが無い)",
-        "計算問題に見えるが実は単一値の抜き出しで完結する問い",
-    ],
-    "multi_hop": [
-        "1チャンクで答えが完結する単純抽出",
-        "中間結論を経由せず、直接答えに到達する問い",
-    ],
-    "negation": [
-        "肯定形で答えられる、否定が本質でない問い",
-        "『○○である』とだけ問う、除外・例外の判断が不要な問い",
-    ],
-    "causal": [
-        "結果だけ聞いて理由(根拠条文)を要求しない問い",
-        "『何が起きるか』だけで『なぜそうなるか』を要求しない問い",
-    ],
-    "temporal": [
-        "単なる日付・時刻の抽出で時系列の順序が問われていない問い",
-        "前後関係を問わずに単独の時点を聞くだけ",
-    ],
-    "comparison_conditional": [
-        "1ケースだけ聞いて比較対象が無い問い",
-        "条件分岐が無く、単一条件だけで完結する問い",
-    ],
-    # --- Logic ---
-    "synonym_interpretation": [
-        "同義語ペアが元チャンクに明示されていないのに無理に作問する",
-        "用語の単純な定義抽出で言い換えが関与しない問い",
-    ],
-    "numeric_inclusion": [
-        "数値の単純抽出だけで範囲・包含関係が問われていない問い",
-        "『○分です』と数値だけ答えさせる問い",
-    ],
-    "concept_inclusion": [
-        "単純な定義抽出で包含関係(上位下位)が無い問い",
-        "別概念どうしを並べるだけで、包含が成立しない関係を扱う",
-    ],
-    "vocabulary_mismatch": [
-        "表記揺れ・略語が元チャンクに無いのに混乱を装う問い",
-        "用語が一致している箇所で無理に表記の差を問う",
-    ],
-    "abstraction_gap": [
-        "抽象問いに対して抽象的にだけ答える(具体条項に落とせていない)問い",
-        "具体的すぎる抜き出しで抽象-具体の橋渡しが無い問い",
-    ],
-    # --- Figure (★ 事故が多発する) ---
-    "simple_table": [
-        "「表に何行あるか」「項目の個数は何個か」など、列挙の数を数えるだけの問い",
-        "表の見出し名をそのまま答えさせる単純抽出",
-    ],
-    "complex_form": [
-        "ヘッダ名や項目名をそのまま抽出するだけで階層・結合の理解が要らない問い",
-        "セル結合・階層構造を一切活用しない単純抽出",
-    ],
-    "concept_diagram": [
-        "概念図・構成図・ブロック図の素材(『構成図』『ブロック図』等の語、図キャプション)が元チャンクに無い場合は無理に作問しない。`insufficient_evidence` に倒すこと",
-        "図に描かれた要素間の関係性を問わずに、単に登場物を列挙させる問い",
-    ],
-    "flowchart": [
-        "フロー記号・ステップ番号・分岐表記が元チャンクに無い場合は無理に作問しない。`insufficient_evidence` に倒すこと",
-        "ステップ名を抽出するだけで、順序・分岐の理解が不要な問い",
-    ],
-    "chart_graph": [
-        "グラフ凡例・軸単位・系列名が元チャンクに無い場合は無理に作問しない。`insufficient_evidence` に倒すこと",
-        "数値読み取りが不要な、グラフのタイトルを答えるだけの問い",
-    ],
-    "complex_layout": [
-        "「カレンダーに月が何個あるか」「表に何項目あるか」など、列挙の個数を数えるだけの問い ★最頻出の事故パターン",
-        "「ページに何が書かれているか」のような抽象的すぎる総括問い",
-        "サイドノート・段組み・図表混在のような構造要素が元チャンクに無い場合は無理に作問しない",
-    ],
-    "large_enumeration": [
-        "「全部で何項目あるか」「○番目の項目は何か」など、個数や順番を抽出するだけの問い",
-        "列挙の中身の意味的な条件分け(該当する/しない)が不要な単純抽出",
-    ],
-    # --- Abstention ---
-    "insufficient_evidence": [
-        "本文内で答えられる問いを無理に Abstention に倒すこと",
-        "あまりに本文と無関係な問い(評価として無意味)",
-    ],
-    "contradictory_evidence": [
-        "実際には矛盾していない複数記述を矛盾と装う問い",
-        "単に異なる事項を扱った別記述を矛盾扱いする問い",
-    ],
-    "fragmented_chunk": [
-        "実際にはチャンク境界で分断されていない箇所を分断扱いにする問い",
-        "本来1チャンクで完結している問いを分断問題と装う",
-    ],
-}
+class AspectExamples(NamedTuple):
+    """prompts/aspect_examples.md の中身 (観点ID → 箇条書き) と、その版数。"""
+
+    good: Mapping[str, list[str]]
+    bad: Mapping[str, list[str]]
+    version: str
+
+
+def _resolve_examples_path() -> Path:
+    candidates = [_REPO_ROOT / ASPECT_EXAMPLES_PROMPT, Path(ASPECT_EXAMPLES_PROMPT)]
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError(
+        "観点の作問例が見つからない (探した場所: "
+        + " / ".join(str(p) for p in candidates)
+        + ")"
+    )
+
+
+def _parse_examples_body(body: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """`## 観点ID` → `### good` / `### bad` → `- 箇条書き` の3階層で読む。
+
+    見出しの外にある説明文の箇条書きは、観点が確定していないので取り込まない。
+    """
+    good: dict[str, list[str]] = {}
+    bad: dict[str, list[str]] = {}
+    aspect: str | None = None
+    bucket: list[str] | None = None
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            aspect = line[3:].strip()
+            good.setdefault(aspect, [])
+            bad.setdefault(aspect, [])
+            bucket = None
+        elif line.startswith("### "):
+            kind = line[4:].strip().lower()
+            if aspect is None:
+                bucket = None
+            elif kind.startswith("good"):
+                bucket = good[aspect]
+            elif kind.startswith("bad"):
+                bucket = bad[aspect]
+            else:
+                bucket = None
+        elif line.startswith("- ") and bucket is not None:
+            bucket.append(line[2:].strip())
+    return good, bad
+
+
+def _validate_examples(
+    good: dict[str, list[str]], bad: dict[str, list[str]]
+) -> None:
+    """観点の増減や綴り違いを黙って素通りさせない。
+
+    片側だけ直すと「その観点だけ作問誘導が空のまま生成される」ため、
+    欠落・未知の観点はここで落として知らせる (fail-closed)。
+    """
+    unknown = sorted(set(good) - set(ALL_ASPECTS))
+    if unknown:
+        raise ValueError(
+            f"{ASPECT_EXAMPLES_PROMPT}: aspects.py に無い観点が書かれている {unknown}"
+        )
+    missing = [a for a in ALL_ASPECTS if not good.get(a) or not bad.get(a)]
+    if missing:
+        raise ValueError(
+            f"{ASPECT_EXAMPLES_PROMPT}: 良い例/悪い例が揃っていない観点 {missing}"
+        )
+
+
+@lru_cache(maxsize=1)
+def load_aspect_examples() -> AspectExamples:
+    path = _resolve_examples_path()
+    meta, body = load_prompt(str(path))
+    good, bad = _parse_examples_body(body)
+    _validate_examples(good, bad)
+    return AspectExamples(
+        good=MappingProxyType(good),
+        bad=MappingProxyType(bad),
+        version=meta.get("prompt_version", ""),
+    )
+
+
+def aspect_examples_version() -> str:
+    """作問例の版数。生成バッチを版で区別できるよう frontmatter から引く。"""
+    return load_aspect_examples().version
+
+
+def __getattr__(name: str) -> Any:
+    """旧来の定数名での参照を保つ (本文の読み込みは初回参照時)。"""
+    if name == "ASPECT_GOOD_EXAMPLES":
+        return load_aspect_examples().good
+    if name == "ASPECT_BAD_PATTERNS":
+        return load_aspect_examples().bad
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # Display labels (日本語、グラフやレビューUI用)

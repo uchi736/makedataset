@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from rageval.evidence import (
+    LOCAL_NUMBER_TOKEN_RE,
+    NUMERAL_CHARS,
     EvidenceStructure,
     classify_evidence_structure,
     kanji_to_int,
@@ -45,6 +47,36 @@ def test_salient_tokens_extracts_articles_forms_values():
     assert "第101条" in toks
     assert any(t.startswith("様式第6") for t in toks)
     assert "5年" in toks
+
+
+# ---------- 番号トークンの定義を1本にする (filter が別実装を持たない) ----------
+
+def test_local_number_token_re_reads_kanji_after_normalization():
+    """回帰: 漢数字の条番号が番号トークンとして拾えること。
+
+    filter の誤結合検出はこの正規表現に依存している。独自の正規表現 +
+    NFKC だけの正規化に戻ると、条番号が漢数字支配のコーパスで無反応になる。
+    """
+    text = normalize_numbers("ボイラー則第六十三条および様式第十一号、別表第七による")
+    found = set(LOCAL_NUMBER_TOKEN_RE.findall(text))
+    assert "第63条" in found
+    assert "様式第11号" in found
+    assert "別表第7" in found
+
+
+def test_local_number_token_re_shared_with_salient_tokens():
+    """salient_tokens と同じ定義から作られていること (二重管理の凍結)。"""
+    toks = salient_tokens("第百一条の規定による")
+    assert "第101条" in toks
+    assert LOCAL_NUMBER_TOKEN_RE.search(normalize_numbers("第百一条")).group(0) == "第101条"
+
+
+def test_numeral_chars_covers_all_notations():
+    """原文表記のまま拾う側 (chunker) が使う文字クラスに3表記が入っていること。"""
+    import re
+    rx = re.compile(f"[{NUMERAL_CHARS}]")
+    for ch in ("1", "１", "六", "十", "百"):
+        assert rx.match(ch), ch
 
 
 # ---------- chained / parallel 判別 ----------

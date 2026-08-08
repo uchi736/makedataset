@@ -30,20 +30,45 @@ from rageval.aspects import (
 )
 from rageval.schema import QAItem
 
+# 目標値・合格線・表示ラベルの正本は webapi/labels.py (合格線はさらにその先の
+# filter.DEFAULT_* を引く)。以前はこの画面と配信側に同じ数値を二重に書いており、
+# 目標を変えたとき片方だけ直すと Streamlit と Web が別の合格線で同じデータを
+# 評価していた (監査 rank 36)。ここでは引くだけにする。
+from rageval.webapi.labels import (
+    ANSWERABILITY_PASS,
+    ASPECT_MIN_PER,
+    GROUNDING_PASS,
+    PILOT_SIZE_RANGE,
+    TARGET_ABSTENTION,
+    TARGET_ANSWER_DIFF,
+    TARGET_SEARCH_DIFF,
+    UNIQUENESS_PASS,
+)
+from rageval.webapi.labels import CATEGORY_LABELS as CATEGORY_LABELS_JA
+from rageval.webapi.labels import CATEGORY_ORDER as _CATEGORY_ORDER
+from rageval.webapi.labels import DIFF_ORDER as _DIFF_ORDER
+from rageval.webapi.labels import DIFFICULTY_LABELS as DIFFICULTY_LABELS_JA
+from rageval.webapi.labels import (
+    ALL_DIFFICULTY_MATCH,
+    ALL_LEAKAGE,
+    ALL_RAG_ANSWER_MATCH,
+    DIFFICULTY_MATCH_LABELS,
+    EVIDENCE_LABELS as EVIDENCE_STRICTNESS_LABELS,
+    LEAKAGE_LABELS,
+    RAG_ANSWER_MATCH_LABELS,
+)
+from rageval.webapi.service import (
+    REVIEWED_DIR_NAME,
+    legacy_review_mirror_path,
+    review_mirror_path,
+)
+
 # ---------------- Plan targets ----------------
 
-CATEGORY_ORDER = ["Integration", "Reasoning", "Logic", "Figure", "Abstention"]
-DIFF_ORDER = ["Easy", "Medium", "Hard"]
-
-TARGET_SEARCH_DIFF = {"Easy": 0.375, "Medium": 0.375, "Hard": 0.25}
-TARGET_ANSWER_DIFF = {"Easy": 0.175, "Medium": 0.625, "Hard": 0.2}
-TARGET_ABSTENTION = (0.10, 0.15)
-PILOT_SIZE_RANGE = (30, 50)
-ASPECT_MIN_PER = 3  # 各観点 最低3問 (R1 plan)
-
-ANSWERABILITY_PASS = 4.0
-GROUNDING_PASS = 4.0
-UNIQUENESS_PASS = 1.0 - 0.92
+# 並びは Literal 由来 (labels 経由)。カテゴリを増やしたときに絞り込みの初期値から
+# 漏れて件数だけが静かに減る、という取りこぼしを防ぐため手書きにしない。
+CATEGORY_ORDER = list(_CATEGORY_ORDER)
+DIFF_ORDER = list(_DIFF_ORDER)
 
 
 JP_FONT = "Yu Gothic UI, Meiryo, Hiragino Sans, sans-serif"
@@ -86,38 +111,15 @@ RAG_RETRIEVAL_HIT_COLORS = {
     "true":  "#22c55e",
     "false": "#ef4444",
 }
+# 色表に無い値の既定。値が増えたときに描画で落ちる/行が消えるのを避ける。
+FALLBACK_COLOR = "#94a3b8"
 
 # ---------------- Display labels (内部値=英語、表示=日本語) ----------------
 
-CATEGORY_LABELS = {
-    "Integration": "統合 (Integration)",
-    "Reasoning":   "推論 (Reasoning)",
-    "Logic":       "論理 (Logic)",
-    "Figure":      "図表 (Figure)",
-    "Abstention":  "棄権 (Abstention)",
-}
-DIFFICULTY_LABELS = {
-    "Easy":   "易 (Easy)",
-    "Medium": "中 (Medium)",
-    "Hard":   "難 (Hard)",
-}
-LEAKAGE_LABELS = {"pass": "合格", "fail": "不合格"}
-DIFFICULTY_MATCH_LABELS = {
-    "aligned":  "一致",
-    "too_easy": "易しすぎる",
-    "too_hard": "難しすぎる",
-}
-EVIDENCE_STRICTNESS_LABELS = {
-    "no-evidence": "根拠なし",
-    "hier-ref":    "単一根拠",
-    "coord-ref":   "並列根拠",
-    "multi-ref":   "複数根拠厳密",
-}
-RAG_ANSWER_MATCH_LABELS = {
-    "match":    "一致",
-    "partial":  "部分一致",
-    "no_match": "不一致",
-}
+# この画面だけ「日本語 (英語)」の併記にする。日本語そのものは labels が正本で、
+# 併記の形だけをここで作る (文言の二重管理を残さないため)。
+CATEGORY_LABELS = {c: f"{CATEGORY_LABELS_JA.get(c, c)} ({c})" for c in CATEGORY_ORDER}
+DIFFICULTY_LABELS = {d: f"{DIFFICULTY_LABELS_JA.get(d, d)} ({d})" for d in DIFF_ORDER}
 RAG_RETRIEVAL_HIT_LABELS = {
     "true":  "命中",
     "false": "外れ",
@@ -133,6 +135,11 @@ def _parse_args() -> argparse.Namespace:
         choices=["all", "general", "kg_poc"],
         help="どの track の QA を表示するか",
     )
+    parser.add_argument(
+        "--data-root", dest="data_root", default=None,
+        help="データ置き場 (dataset/chunks/reviewed をこの下から探す)。"
+             "省略時は --in の親から推定する",
+    )
     # Review-tab inputs (when 'レビュー' tab is used inside the dashboard)
     parser.add_argument("--reviewed-out", default="data/reviewed",
                         help="レビュー保存先ディレクトリ")
@@ -141,6 +148,41 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--reviewer", default="unknown")
     known, _ = parser.parse_known_args()
     return known
+
+
+def _resolve_data_root(input_arg: str, explicit: str | None = None) -> Path:
+    """データ置き場を決める。
+
+    以前は `./data` があればそれを無条件に採用していたため、`--in` に別の置き場
+    (外付けのコーパスや検証用の写し) を渡しても捨てられ、候補に無ければ先頭の
+    データセットに差し替わって、**指定したのとは別のコーパスの集計が無言で
+    表示されていた** (監査 rank 31)。--in の親を既定にして、置き場と対象を
+    必ず連動させる。
+    """
+    if explicit:
+        return Path(explicit)
+    p = Path(input_arg)
+    # dir/ でも dir/file.jsonl でも「データセットの親」を置き場と見なす
+    dataset_dir = p.parent if p.suffix == ".jsonl" else p
+    return dataset_dir.parent
+
+
+def _target_text(targets: dict[str, float]) -> str:
+    """目標配分の説明文を目標値そのものから組む (見出しの写し違いを無くす)。"""
+    return " / ".join(
+        f"{DIFFICULTY_LABELS_JA.get(k, k)} {v:.1%}".replace(".0%", "%")
+        for k, v in targets.items()
+    )
+
+
+def _select_dataset(ds_names: list[str], wanted: str) -> str:
+    """--in が指すデータセットを候補から選ぶ。無ければ先頭に落とさず落とす。"""
+    if wanted not in ds_names:
+        raise ValueError(
+            f"指定されたデータセットが見つかりません: {wanted} "
+            f"(候補: {', '.join(ds_names) or 'なし'})"
+        )
+    return wanted
 
 
 def _resolve_inputs(pattern: str) -> list[Path]:
@@ -318,7 +360,7 @@ def _row_bar(
         for v in order:
             if str(v) not in color_map:
                 domain_disp.append(disp(str(v)))
-                range_.append("#94a3b8")
+                range_.append(FALLBACK_COLOR)
         color_enc = alt.Color(
             "display:N",
             scale=alt.Scale(domain=domain_disp, range=range_),
@@ -445,7 +487,10 @@ def _aspect_coverage_chart(df: pd.DataFrame) -> alt.LayerChart:
     )
     color_enc = alt.Color(
         "category:N",
-        scale=alt.Scale(domain=CATEGORY_ORDER, range=[CATEGORY_COLORS[c] for c in CATEGORY_ORDER]),
+        scale=alt.Scale(
+            domain=CATEGORY_ORDER,
+            range=[CATEGORY_COLORS.get(c, FALLBACK_COLOR) for c in CATEGORY_ORDER],
+        ),
         legend=alt.Legend(orient="top", title=None, labelFont=JP_FONT),
     )
     max_count = max(int(d["count"].max()), ASPECT_MIN_PER + 1)
@@ -571,16 +616,18 @@ def _render_quality_tab(df: pd.DataFrame) -> None:
         st.altair_chart(_hist_threshold(df, "uniqueness", UNIQUENESS_PASS), width="stretch")
 
     st.markdown("#### 棄却理由内訳")
+    # 棒の名前にも合格線を埋め込む。閾値を動かすと判定だけが追随して名前が旧値を
+    # 表示し続けるので、判定と同じ定数から文字列を組む (監査 rank 47)。
     reasons: list[dict] = []
     for _, row in df.iterrows():
         if pd.notna(row["answerability"]) and row["answerability"] < ANSWERABILITY_PASS:
-            reasons.append({"reason": "answerability < 4"})
+            reasons.append({"reason": f"answerability < {ANSWERABILITY_PASS:g}"})
         if row["leakage"] == "fail":
             reasons.append({"reason": "leakage = fail"})
         if pd.notna(row["grounding"]) and row["grounding"] < GROUNDING_PASS:
-            reasons.append({"reason": "grounding < 4"})
+            reasons.append({"reason": f"grounding < {GROUNDING_PASS:g}"})
         if pd.notna(row["uniqueness"]) and row["uniqueness"] < UNIQUENESS_PASS:
-            reasons.append({"reason": "uniqueness < 0.08 (重複疑い)"})
+            reasons.append({"reason": f"uniqueness < {UNIQUENESS_PASS:.2f} (重複疑い)"})
     if reasons:
         rdf = pd.DataFrame(reasons)
         reason_order = sorted(rdf["reason"].unique(), key=lambda r: -int((rdf["reason"] == r).sum()))
@@ -593,7 +640,7 @@ def _render_quality_tab(df: pd.DataFrame) -> None:
     with lc1:
         if df["leakage"].notna().any():
             st.altair_chart(
-                _row_bar(df.dropna(subset=["leakage"]), "leakage", ["pass", "fail"],
+                _row_bar(df.dropna(subset=["leakage"]), "leakage", list(ALL_LEAKAGE),
                          color_map=LEAKAGE_COLORS, label_map=LEAKAGE_LABELS, show_legend=True),
                 width="stretch",
             )
@@ -601,7 +648,7 @@ def _render_quality_tab(df: pd.DataFrame) -> None:
         if df["difficulty_match"].notna().any():
             st.altair_chart(
                 _row_bar(df.dropna(subset=["difficulty_match"]), "difficulty_match",
-                         ["aligned", "too_easy", "too_hard"],
+                         list(ALL_DIFFICULTY_MATCH),
                          color_map=DIFFICULTY_MATCH_COLORS, label_map=DIFFICULTY_MATCH_LABELS,
                          show_legend=True),
                 width="stretch",
@@ -720,14 +767,20 @@ def _render_usage_guide() -> None:
         "通過率が目標に届いているかを見る。\n"
         "3. **「レビュー」タブで1問ずつ判定する**。①質問と回答を読む → "
         "②根拠(黄色の箇所)を確かめる → ③採用/修正/却下。判定は即座に "
-        "`data/reviewed/` に保存され、そのファイルが納品物になる。\n\n"
+        "`reviewed/<データセット>/<元ファイル名>` に保存され、そのファイルが"
+        "納品物になる。\n\n"
         "根拠の照合先チャンクは自動で探す。狙いを固定したいときはサイドバーの"
         "「詳細設定」から。"
     )
 
 
 def _discover_data_sources(data_root: Path) -> tuple[list[tuple[str, list[str]]], list[str]]:
-    """data_root 配下の (データセットdir, ファイル名) と chunks* dir を列挙する。"""
+    """data_root 配下の (データセットdir, ファイル名) と chunks* dir を列挙する。
+
+    reviewed/ はデータセットごとの入れ子 (reviewed/<データセット>/…) になったので、
+    直下1段だけ潜って `reviewed/raw_kg_v1` のような名前でも候補に出す。潜らないと
+    人手のレビュー結果がこの画面から見えなくなる (監査 rank 3 の保存先一本化に伴う)。
+    """
     datasets: list[tuple[str, list[str]]] = []
     chunk_dirs: list[str] = []
     if not data_root.exists():
@@ -742,6 +795,12 @@ def _discover_data_sources(data_root: Path) -> tuple[list[tuple[str, list[str]]]
             continue
         if jsonls:
             datasets.append((d.name, jsonls))
+        if d.name != REVIEWED_DIR_NAME:
+            continue
+        for sub in sorted(p for p in d.iterdir() if p.is_dir()):
+            sub_jsonls = sorted(p.name for p in sub.glob("*.jsonl"))
+            if sub_jsonls:
+                datasets.append((f"{d.name}/{sub.name}", sub_jsonls))
     return datasets, chunk_dirs
 
 
@@ -848,24 +907,29 @@ def _render_analysis_tab(df, items: list[dict], has_general: bool, has_kg: bool)
             width="stretch",
         )
     with oc2:
-        st.markdown("**検索難易度** (目標: 易 37.5% / 中 37.5% / 難 25%)")
+        st.markdown(f"**検索難易度** (目標: {_target_text(TARGET_SEARCH_DIFF)})")
         st.altair_chart(
             _row_bar(df, "retrieval_level", DIFF_ORDER, targets=TARGET_SEARCH_DIFF,
                      color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS),
             width="stretch",
         )
     with oc3:
-        st.markdown("**回答難易度** (目標: 易 17.5% / 中 62.5% / 難 20%)")
+        st.markdown(f"**回答難易度** (目標: {_target_text(TARGET_ANSWER_DIFF)})")
         st.altair_chart(
             _row_bar(df, "answer_level", DIFF_ORDER, targets=TARGET_ANSWER_DIFF,
                      color_map=DIFFICULTY_COLORS, label_map=DIFFICULTY_LABELS),
             width="stretch",
         )
     if has_general:
-        st.markdown("**棄権 (Abstention) 比率** (目標: 10%-15%)")
+        # 見出しも帯の満杯基準も目標値から組む。片方だけ直値だと、警告文は新しい
+        # 目標を語るのに帯と見出しは旧値のまま、という自己矛盾が同一画面に出る
+        # (監査 rank 46)。
+        lo_a, hi_a = TARGET_ABSTENTION
+        st.markdown(f"**棄権 (Abstention) 比率** (目標: {lo_a:.0%}-{hi_a:.0%})")
         absten_n = int((df["category_primary"] == "Abstention").sum())
         absten_r = absten_n / len(df) if len(df) else 0
-        st.progress(min(absten_r / 0.15, 1.0), text=f"{absten_n} 件 / {len(df)} 件 = {absten_r:.1%}")
+        st.progress(min(absten_r / hi_a, 1.0) if hi_a else 0.0,
+                    text=f"{absten_n} 件 / {len(df)} 件 = {absten_r:.1%}")
 
     st.divider()
 
@@ -940,9 +1004,7 @@ def main() -> None:
 
     # ---- データ置き場と候補の探索 ----
     default_input = Path(args.input)
-    data_root = Path("data")
-    if not data_root.exists():
-        data_root = default_input.parent if str(default_input.parent) else Path(".")
+    data_root = _resolve_data_root(args.input, getattr(args, "data_root", None))
     datasets, chunk_dirs = _discover_data_sources(data_root)
 
     # ---- ヘッダー: タイトル + 使い方 ----
@@ -963,7 +1025,12 @@ def main() -> None:
     else:
         default_ds_name, default_file = default_input.name, None
     if ds_names:
-        default_ds = default_ds_name if default_ds_name in ds_names else ds_names[0]
+        try:
+            default_ds = _select_dataset(ds_names, default_ds_name)
+        except ValueError as e:
+            st.error(f"{e}　置き場は `{data_root}` です (--data-root で変えられます)")
+            st.stop()
+            return
         sel_ds = st.sidebar.selectbox(
             "データセット", ds_names, index=ds_names.index(default_ds),
             label_visibility="collapsed",
@@ -1050,7 +1117,8 @@ def main() -> None:
     ]
 
     st.caption(
-        f"data/{sel_ds} ・ 対象 {len(df)} / {len(df_all)} 件 ・ 照合先チャンク: {chunks_name}"
+        f"{data_root}/{sel_ds} ・ 対象 {len(df)} / {len(df_all)} 件 ・ "
+        f"照合先チャンク: {chunks_name}"
     )
     if df.empty:
         st.info("絞り込みで全件が除外されています。サイドバーの絞り込みを緩めてください。")
@@ -1079,8 +1147,19 @@ def main() -> None:
     reviewed_dir = Path(args.reviewed_out)
 
     def _save_from_dashboard(qa: QAItem) -> None:
+        # 保存先は webapi.service.review_mirror_path に一本化する。平たい
+        # 「保存先/元ファイル名」だと data/raw_x/batch.jsonl と
+        # data/filtered_x/batch.jsonl が同じ場所を奪い合い、片方を保存した瞬間に
+        # もう片方の人手判定が無警告で消えていた (監査 rank 3)。
+        # 土台は「入れ子のミラー → 平たい旧配置 → 元ファイル」の順。旧配置を
+        # 見ないと、移行直後に1問保存した瞬間「その1問以外すべて未判定」の
+        # ミラーが新規に作られ、以後そちらが優先されて過去の判定が消える。
         source = Path(st.session_state.review_sources[id(qa)])
-        _save_review_item(qa, source, reviewed_dir / source.name)
+        _save_review_item(
+            qa, source,
+            review_mirror_path(data_root, source, reviewed_dir=reviewed_dir),
+            legacy_review_mirror_path(data_root, source, reviewed_dir=reviewed_dir),
+        )
 
     has_general = bool((df["kg_query_type"].isna() & df["kg_novelty"].isna()).any())
     has_kg = bool(df["kg_query_type"].notna().any() or df["kg_novelty"].notna().any())
@@ -1097,7 +1176,7 @@ def main() -> None:
             reviewer=reviewer,
             key_prefix="rv",
             show_header=True,
-            input_label=f"reviewed → <b>{reviewed_dir}/&lt;元ファイル名&gt;</b>",
+            input_label=f"reviewed → <b>{reviewed_dir}/&lt;データセット&gt;/&lt;元ファイル名&gt;</b>",
             track_label=f"[{track_filter}]",
             on_save=_save_from_dashboard,
         )
@@ -1139,7 +1218,7 @@ def _render_rag_verify_tab(df: pd.DataFrame) -> None:
     st.altair_chart(
         _row_bar(
             verified_df, "rag_answer_match",
-            ["match", "partial", "no_match"],
+            list(ALL_RAG_ANSWER_MATCH),
             color_map=RAG_ANSWER_MATCH_COLORS,
             label_map=RAG_ANSWER_MATCH_LABELS,
             show_legend=True,
@@ -1176,7 +1255,7 @@ def _render_rag_verify_tab(df: pd.DataFrame) -> None:
             total = len(sub)
             if total == 0:
                 continue
-            for verdict in ["match", "partial", "no_match"]:
+            for verdict in ALL_RAG_ANSWER_MATCH:
                 n = int((sub["rag_answer_match"] == verdict).sum())
                 agg_rows.append({
                     "aspect": asp,
@@ -1194,7 +1273,7 @@ def _render_rag_verify_tab(df: pd.DataFrame) -> None:
             sort_df = adf.groupby("display")["no_match_rate"].max().sort_values(ascending=False)
             sort_order = sort_df.index.tolist()
 
-            verdict_order = ["match", "partial", "no_match"]
+            verdict_order = list(ALL_RAG_ANSWER_MATCH)
             verdict_label_order = [RAG_ANSWER_MATCH_LABELS[v] for v in verdict_order]
             verdict_color_range = [RAG_ANSWER_MATCH_COLORS[v] for v in verdict_order]
 
@@ -1235,8 +1314,10 @@ def _render_rag_verify_tab(df: pd.DataFrame) -> None:
     # --- KG-opportunity 候補リスト ---
     st.markdown("#### KG候補リスト (vector RAG が落とした問い)")
     st.caption("judge が答えあり と認めた、または未判定で、vector RAG が落とした問い")
+    # 合格線はこの画面の定数から引く。増産すべき QA を人が選び出す一覧なので、
+    # ここだけ旧値のまま残ると何の警告も出ずに選定が古い線で走る (監査 rank 45)。
     cand = df[
-        (df["answerability"].isna() | (df["answerability"] >= 4))
+        (df["answerability"].isna() | (df["answerability"] >= ANSWERABILITY_PASS))
         & (df["rag_answer_match"] == "no_match")
     ].copy()
     if cand.empty:
@@ -1273,7 +1354,8 @@ def _render_rag_verify_tab(df: pd.DataFrame) -> None:
                 ),
                 "答えやすさ": st.column_config.NumberColumn(
                     width="small", format="%.1f",
-                    help="judge が判定した答えやすさ (4以上で 'judge は答えあり' と認定)",
+                    help=f"judge が判定した答えやすさ "
+                         f"({ANSWERABILITY_PASS:g}以上で 'judge は答えあり' と認定)",
                 ),
             },
         )

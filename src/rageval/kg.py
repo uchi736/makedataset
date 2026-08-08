@@ -21,6 +21,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 
+# doc_id / position の正本は Chunk.doc_id / Chunk.position。chunk_id 文字列からしか
+# 導けない場所のために、文字列解析は chunker の1組だけを使う (自前の split("__") を
+# 増やすと、区切りの違う chunk_id を持ち込んだときに片方だけが黙って壊れる)。
+from .chunker import doc_id_of, position_of
+
 # ---------------- 値ノードの判定 ----------------
 # graphrag 側の `is_value` フラグは 16 ノードにしか付いていないため自前で判定する。
 # 「様式第6号」「別表第2」「5年」のような値は **経路の終端にだけ**置く。
@@ -196,6 +201,78 @@ DEPENDENCY_RELATIONS = frozenset({
     "ISSUED_BY", "SUBMITTED_TO", "REGISTERS", "PASSES_THROUGH",
 })
 
+# 中間ノードのハブ判定に使う pagerank 上限。2026-08-01 の 30 問全数検品で効き目を
+# 確認した値だが、pagerank は総和1に正規化されるので平均は 1/ノード数 になり、
+# **この絶対値はコーパス規模で意味が変わる** (ノード数が倍になれば同じ 0.0005 が
+# 「ほぼ全通し」から「ほぼ全弾き」へ静かに化ける)。監査 rank 18 (2026-08-08) の
+# 指摘どおり、本来は「上位何割を弾くか」の分位で持つべきもの。移行の足場として
+# `hub_pagerank_threshold` を用意してあるので、コーパスを差し替えたら実分布から
+# 引き直して比較すること (既定を分位へ切り替えるかは供給実測を見てから決める)。
+DEFAULT_MAX_PAGERANK = 0.0005
+
+# 分位で持つ場合に「上位何割をハブとして弾くか」。0.02 = pagerank 上位 2%。
+DEFAULT_HUB_TOP_FRACTION = 0.02
+
+# 段0 が1辺あたりに試す裏付け候補の上限。抽出回数の多い辺は共起候補が 20 件を超え、
+# 全滅する辺で数分溶ける (2026-08-03 の17時間無進捗の一因) ため処理時間の都合で
+# 入れた上限だが、含意が5番目以降の候補にしか無い辺はここで黙って落ち、星なら
+# min_branches 割れで丸ごと消える = 型の合格条件を左右する。打ち切りの実績を
+# `SupportTruncation` に残し、供給が痩せた原因が上限か素材不良かを事後に切り分ける。
+MAX_SUPPORT_CANDIDATES = 4
+
+
+@dataclass
+class SupportTruncation:
+    """裏付け候補の打ち切り実績。呼び出し側でバッチ全体ぶんを積み上げて出す。"""
+
+    edges_seen: int = 0
+    edges_truncated: int = 0
+    candidates_dropped: int = 0
+
+    def record(self, n_candidates: int, limit: int) -> None:
+        self.edges_seen += 1
+        if n_candidates > limit:
+            self.edges_truncated += 1
+            self.candidates_dropped += n_candidates - limit
+
+    def summary(self) -> str:
+        return (
+            f"裏付け候補の打ち切り: {self.edges_truncated}/{self.edges_seen} 辺 "
+            f"(上限超過で試さなかった候補 {self.candidates_dropped} 件)"
+        )
+
+
+def hub_pagerank_threshold(
+    sess,
+    *,
+    top_fraction: float = DEFAULT_HUB_TOP_FRACTION,
+    excluded_labels: tuple[str, ...] = (),
+) -> Optional[float]:
+    """実際の pagerank 分布から「上位 top_fraction を弾く」閾値を求める。
+
+    絶対値 `DEFAULT_MAX_PAGERANK` はコーパス規模で意味が変わるので、コーパスを
+    差し替えたらこちらで引き直した値と供給量を比べる。分布が取れない (pagerank が
+    1件も無い KG) 場合は None を返し、呼び出し側で「ハブ判定なし」に倒せるようにする。
+    """
+    excluded = list(excluded_labels or _EXCLUDED_LABELS)
+    rows = sess.run(
+        """
+        MATCH (n)
+        WHERE n.pagerank IS NOT NULL
+          AND NOT any(l IN labels(n) WHERE l IN $excluded)
+        RETURN n.pagerank AS pr
+        """,
+        excluded=excluded,
+    )
+    values = sorted(float(r["pr"]) for r in rows)
+    if not values:
+        return None
+    frac = min(max(top_fraction, 0.0), 1.0)
+    # 上位 frac を弾く = 下から (1-frac) の位置を通す上限にする
+    idx = int(len(values) * (1.0 - frac)) - 1
+    return values[max(idx, 0)]
+
+
 _TWO_HOP_CYPHER = """
 MATCH (a)-[e1]->(b)-[e2]->(c)
 WHERE e1.source_chunks IS NOT NULL AND e2.source_chunks IS NOT NULL
@@ -223,7 +300,7 @@ def iter_two_hop_paths(
     sess,
     *,
     min_extraction_count: int = 2,
-    max_pagerank: Optional[float] = 0.0005,
+    max_pagerank: Optional[float] = DEFAULT_MAX_PAGERANK,
     require_disjoint_chunks: bool = True,
     exclude_value_intermediate: bool = True,
     allowed_relations: Optional[frozenset] = DEPENDENCY_RELATIONS,
@@ -325,12 +402,19 @@ class KGStar:
         return f"{self.center} -[{self.relation}]-> {{{inner}}}"
 
 
-_CHUNK_POS_RE = re.compile(r"__c(\d+)$")
+def _doc_id(chunk_id: str, doc_id_by_chunk: Optional[dict[str, str]]) -> str:
+    """出典チャンクの所属文書。正本は `Chunk.doc_id` なので対応表があればそれを引く。
 
-
-def _chunk_position(chunk_id: str) -> Optional[int]:
-    m = _CHUNK_POS_RE.search(chunk_id or "")
-    return int(m.group(1)) if m else None
+    対応表を渡せない呼び出し (KG 側にしか chunk_id が無い場合) だけ chunk_id から
+    導く。文字列解析は chunker.doc_id_of の1実装に寄せてある — ここで split("__")
+    を書くと、doc_id に "__" を含む文書や区切りの違う chunk_id を持ち込んだときに
+    「全枝が別文書」に見えて星が例外なく全滅する (監査 rank 14, 2026-08-08)。
+    """
+    if doc_id_by_chunk:
+        known = doc_id_by_chunk.get(chunk_id)
+        if known:
+            return known
+    return doc_id_of(chunk_id)
 
 
 def iter_star_groups(
@@ -340,6 +424,7 @@ def iter_star_groups(
     max_branches: int = 8,
     max_position_spread: Optional[int] = None,
     chunk_texts: Optional[dict[str, str]] = None,
+    doc_id_by_chunk: Optional[dict[str, str]] = None,
     limit: int = 2000,
 ) -> Iterator[KGStar]:
     """aggregation の素材になる星型を列挙する。
@@ -358,6 +443,13 @@ def iter_star_groups(
       - 枝が多すぎる星は extraction_count 上位 `max_branches` 本に絞る
         (問いとして列挙可能な規模に保つ。正解は網羅主張にしない前提)
     `chunk_texts` を渡すと、両端の表記が出典に共起する枝だけを数える。
+    `doc_id_by_chunk` (chunk_id → Chunk.doc_id) を渡すと同一文書判定に正本を使う。
+    渡さない場合だけ chunk_id から導くので、KG の chunk_id が rageval の採番と
+    ずれているコーパスでは必ず渡すこと。
+
+    棄却の内訳は列挙の最後に1行出す。混線の防波堤 (同一文書) は機械側に残った
+    唯一の条件なので、素材が出ない原因が「素材不良」なのか「doc_id の取り違えで
+    全枝が別文書に見えている」のかを、件数を見て切り分けられるようにしておく。
     """
     rows = sess.run("""
         MATCH (a)-[e]->(b)
@@ -386,6 +478,7 @@ def iter_star_groups(
         groups.setdefault((r["center"], r["rel"]), []).append(edge)
 
     emitted = 0
+    n_few_branches = n_multi_doc = n_single_chunk = n_spread = 0
     for (center, rel), edges in groups.items():
         if emitted >= limit:
             break
@@ -393,21 +486,29 @@ def iter_star_groups(
             edges = [e for e in edges
                      if candidate_support_chunks(e, chunk_texts)]
         if len(edges) < min_branches:
+            n_few_branches += 1
             continue
         edges = sorted(edges, key=lambda e: -e.extraction_count)[:max_branches]
-        docs = {c.split("__")[0] for e in edges for c in e.source_chunks}
+        docs = {_doc_id(c, doc_id_by_chunk) for e in edges for c in e.source_chunks}
         if len(docs) != 1:
+            n_multi_doc += 1
             continue
         chunks_used = {c for e in edges for c in e.source_chunks}
         if len(chunks_used) < 2:
+            n_single_chunk += 1
             continue
         if max_position_spread is not None:
-            positions = [p for p in (_chunk_position(c) for c in chunks_used)
+            positions = [p for p in (position_of(c) for c in chunks_used)
                          if p is not None]
             if positions and max(positions) - min(positions) > max_position_spread:
+                n_spread += 1
                 continue
         emitted += 1
         yield KGStar(center=center, relation=rel, edges=edges)
+
+    print(f"[kg] 星の棄却内訳: 枝不足 {n_few_branches} / 別文書混在 {n_multi_doc} / "
+          f"出典1チャンク {n_single_chunk} / 位置幅超過 {n_spread} "
+          f"→ 採用 {emitted}")
 
 
 def iter_excludes_edges(
@@ -450,17 +551,29 @@ def verify_star_provenance(
     model: str,
     llm: Optional[LLMCaller] = None,
     min_branches: int = 3,
+    max_support_candidates: int = MAX_SUPPORT_CANDIDATES,
+    truncation: Optional[SupportTruncation] = None,
 ) -> Optional[list[EdgeVerification]]:
     """星の各枝を LLM 含意判定に掛け、裏付けの取れた枝だけを残す。
 
     連鎖 (verify_path_provenance) と違い、**落ちた枝は捨てるだけ**で星自体は
     生かす (正解は「原文で確定した要素の集合」であり、KG の枝全部ではない)。
     残った枝が min_branches 未満、または出典が1チャンクに縮んだら不成立。
+
+    `max_support_candidates` は連鎖側と同じ 1 定数を既定にする (別値になっていると
+    型ごとに合格条件が変わる)。打ち切りは `truncation` に積み、星が落ちたときだけ
+    「素材不良か上限か」が判るよう1行出す。
     """
     verified: list[EdgeVerification] = []
+    truncated_here = 0
     for edge in star.edges:
         accepted: Optional[EdgeVerification] = None
-        for cid in candidate_support_chunks(edge, chunk_text_by_id)[:4]:
+        candidates = candidate_support_chunks(edge, chunk_text_by_id)
+        if len(candidates) > max_support_candidates:
+            truncated_here += 1
+        if truncation is not None:
+            truncation.record(len(candidates), max_support_candidates)
+        for cid in candidates[:max_support_candidates]:
             accepted = verify_edge_relation(
                 edge, cid, chunk_text_by_id[cid], model=model, llm=llm,
             )
@@ -468,9 +581,11 @@ def verify_star_provenance(
                 break
         if accepted is not None:
             verified.append(accepted)
-    if len(verified) < min_branches:
-        return None
-    if len({v.source_chunk_id for v in verified}) < 2:
+    if len(verified) < min_branches or len({v.source_chunk_id for v in verified}) < 2:
+        if truncated_here:
+            print(f"[kg] 段0で星が不成立 ({star.center} -[{star.relation}]->): "
+                  f"裏付け候補を上限 {max_support_candidates} 件で打ち切った枝が "
+                  f"{truncated_here} 本ある (素材不良と区別できない)")
         return None
     return verified
 
@@ -654,12 +769,17 @@ def verify_path_provenance(
     model: str,
     llm: Optional[LLMCaller] = None,
     terminal_leak_free: bool = False,
+    max_support_candidates: int = MAX_SUPPORT_CANDIDATES,
+    truncation: Optional[SupportTruncation] = None,
 ) -> Optional[list[EdgeVerification]]:
     """全エッジについて、共起候補の少なくとも1件で関係まで確認する。
 
     `terminal_leak_free=True` (multi_hop) では終端辺の候補を語彙断絶チャンク
     (始点表記を含まないもの) に絞る。素材列挙が leak-free 候補ありの経路だけを
     通していても、段0が閉包チャンクを根拠に採ってしまえば台無しになるため。
+
+    `max_support_candidates` で1辺あたりに試す候補数を絞る (既定 MAX_SUPPORT_CANDIDATES)。
+    打ち切りは `truncation` に積み、その辺で不成立になったときだけ1行出す。
     """
     verified: list[EdgeVerification] = []
     used_chunks: set[str] = set()
@@ -670,9 +790,9 @@ def verify_path_provenance(
             candidates = leak_free_terminal_chunks(path, chunk_text_by_id)
         else:
             candidates = candidate_support_chunks(edge, chunk_text_by_id)
-        # 候補は上位4件まで。抽出回数の多い辺は候補が20件を超え、全滅パターンで
-        # 1辺に数分溶ける (2026-08-03 の17時間無進捗の一因)
-        for cid in candidates[:4]:
+        if truncation is not None:
+            truncation.record(len(candidates), max_support_candidates)
+        for cid in candidates[:max_support_candidates]:
             if cid in used_chunks:
                 continue
             accepted = verify_edge_relation(
@@ -681,6 +801,11 @@ def verify_path_provenance(
             if accepted is not None:
                 break
         if accepted is None:
+            if len(candidates) > max_support_candidates:
+                print(f"[kg] 段0で辺が不成立 ({edge.subject} -[{edge.predicate}]-> "
+                      f"{edge.object}): 候補 {len(candidates)} 件を上限 "
+                      f"{max_support_candidates} 件で打ち切った "
+                      f"(残り {len(candidates) - max_support_candidates} 件は未検証)")
             return None
         verified.append(accepted)
         used_chunks.add(accepted.source_chunk_id)
@@ -698,7 +823,7 @@ def count_two_hop_paths(sess, **filters: Any) -> int:
         q,
         excluded=list(_EXCLUDED_LABELS),
         min_ec=filters.get("min_extraction_count", 2),
-        max_pr=filters.get("max_pagerank", 0.0005),
+        max_pr=filters.get("max_pagerank", DEFAULT_MAX_PAGERANK),
         disjoint=filters.get("require_disjoint_chunks", True),
         allowed=(sorted(allowed) if allowed else None),
         limit=filters.get("limit", 1_000_000),

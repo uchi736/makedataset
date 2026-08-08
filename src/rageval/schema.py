@@ -180,6 +180,14 @@ class KGPathProvenance(BaseModel):
     # 別表記へ機械置換した場合に {"canonical": 正規表記, "used": 使用表記} が入る。
     # 空 dict = 置換なし。
     term_substitution: dict[str, str] = Field(default_factory=dict)
+    # 認定ゲート (rag_verify.certify_kg_items) の結果。型別表の合格線を実測で
+    # 切った結果で、False = 「KG が要る」を名乗らせない (対照群として保持する。
+    # 項目は捨てない)。既定 True は旧 JSONL をそのまま読めるようにするための値で、
+    # 「認定済み」ではなく「ゲート未適用」を意味する — 未適用かどうかは
+    # certification_reason が空文字かどうかで区別する。
+    certified: bool = True
+    # 認定/不認定の理由 (型別表のどの条件で切ったか)。空文字 = ゲート未適用。
+    certification_reason: str = ""
 
 
 # ===== AnswerGrounding =====

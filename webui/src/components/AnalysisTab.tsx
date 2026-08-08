@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Labels, QAItem } from "../types";
+import { isKgCandidate } from "../types";
 import { isKg, pct } from "../util";
 import CoverageTab from "./CoverageTab";
 import KgTab from "./KgTab";
@@ -58,7 +59,10 @@ export default function AnalysisTab(props: {
     ? `ゲート通過 ${passed}/${scored.length} 件 (${pct(passed / scored.length)})`
     : "判定LLM 未実行";
 
-  const ragNoMatch = ragVerified.filter((it) => it.rag_verification?.answer_match === "no_match").length;
+  // KG候補の数え方は isKgCandidate 1本に揃える。answer_match だけで数えると、
+  // 判定失敗や回答生成の障害による no_match が混ざり、見出しの数字が中の
+  // KPI 板より大きく出て、障害が KG-RAG の優位の証拠として読まれる (監査 rank 40)。
+  const kgCandidates = ragVerified.filter((it) => isKgCandidate(it, t.answerability_pass)).length;
   const kgUnknown = kgItems.filter((it) => it.llm_knowledge === "unknown").length;
 
   return (
@@ -81,7 +85,7 @@ export default function AnalysisTab(props: {
       {ragVerified.length > 0 && (
         <Section
           title="RAG検証 (実走)"
-          headline={`検証済 ${ragVerified.length} 件 ・ 不一致 (KG候補) ${ragNoMatch} 件`}
+          headline={`検証済 ${ragVerified.length} 件 ・ KG候補 (不一致・照合成立) ${kgCandidates} 件`}
         >
           <RagVerifyTab items={items} labels={labels} onGoReview={onGoReview} />
         </Section>

@@ -315,3 +315,70 @@ def test_demote_single_unit_skips_kg_path_items():
     )
     assert demote_single_unit(qa) is False
     assert qa.kg_query_type == "negation_exhaustive"
+
+
+# ---------------- LOO 降格の可否を型別表から引く (2026-08-08, 監査 rank 24) ----------------
+
+def _kg_path_qa(qt="multi_hop", per_doc=None):
+    """kg_path 付き (= KG 経路由来) の QA。LOO では型を動かしてはいけない側。"""
+    from datetime import datetime
+    from rageval.schema import KGPathProvenance
+    qa = _qa_for_demote(qt=qt, per_doc=per_doc)
+    qa.kg_path = KGPathProvenance(
+        snapshot_id="s", path_text="p", edges=[], verifier_model="j",
+        verified_at=datetime.now(), shape="chain",
+    )
+    return qa
+
+
+def test_loo_demotable_table_covers_every_kg_query_type():
+    """型を足して LOO 列を書き忘れたら落ちる (手書きの第4の型リストへの逆戻り防止)。"""
+    from rageval.answer_grounding import LOO_DEMOTABLE_BY_TYPE
+    from rageval.tracks.kg_poc import ALL_KG_QUERY_TYPES
+    missing = [t for t in ALL_KG_QUERY_TYPES if t not in LOO_DEMOTABLE_BY_TYPE]
+    assert missing == [], f"LOO_DEMOTABLE_BY_TYPE に無い型: {missing}"
+    assert LOO_DEMOTABLE_BY_TYPE["single_fact"] is False   # 降格先そのもの
+
+
+def test_loo_demotion_policy_reads_the_table_not_a_hand_written_list():
+    from rageval.answer_grounding import loo_demotion_policy
+    assert loo_demotion_policy(_qa_for_demote(qt="aggregation")).allowed is True
+    assert loo_demotion_policy(_qa_for_demote(qt="single_fact")).allowed is False
+
+
+def test_unregistered_query_type_is_not_demoted_and_reason_is_recorded():
+    """回帰: 表に無い型は黙って降格対象から漏れるのでなく、理由を記録して見送る。"""
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(per_doc={"d1": True, "d2": False})
+    qa.kg_query_type = "temporal"          # 将来足した型を模擬 (表には無い)
+    assert demote_if_not_required(qa) is False
+    assert qa.kg_query_type == "temporal"
+    assert "降格見送り" in qa.difficulty_rationale
+    assert "表に無い型" in qa.difficulty_rationale
+
+
+def test_kg_path_guard_records_why_demotion_was_skipped():
+    """kg_path 由来を降格しない判断 (既存の意図) を保ちつつ、理由を残すこと。"""
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _kg_path_qa(per_doc={"d1": True, "d2": False})
+    assert demote_if_not_required(qa) is False
+    assert qa.kg_query_type == "multi_hop"
+    assert "認定ゲート" in qa.difficulty_rationale
+
+
+def test_demotion_skip_note_is_not_appended_twice():
+    """再実行で同じ理由が積み上がらないこと (履歴欄が理由文で埋まる事故の防止)。"""
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _kg_path_qa(per_doc={"d1": True, "d2": False})
+    demote_if_not_required(qa)
+    once = qa.difficulty_rationale
+    demote_if_not_required(qa)
+    assert qa.difficulty_rationale == once
+
+
+def test_single_fact_skip_is_not_recorded():
+    """仕様どおり降格しない型 (single_fact) では履歴を汚さない。"""
+    from rageval.answer_grounding import demote_if_not_required
+    qa = _qa_for_demote(qt="single_fact", per_doc={"d1": True, "d2": False})
+    assert demote_if_not_required(qa) is False
+    assert "降格見送り" not in qa.difficulty_rationale

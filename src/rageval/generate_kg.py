@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,7 @@ from pydantic import ValidationError
 
 from . import kg
 from .chunker import load_chunks
-from .evidence import classify_evidence_structure, normalize
+from .evidence import classify_evidence_structure, normalize, normalize_numbers
 from .generate import _coerce_to_dict, _stable_qa_id, detect_fabricated_terms
 from .llm import LLMError, generate as llm_generate
 from .prompts import load_prompt, render
@@ -43,6 +44,7 @@ from .schema import (
     KGPathProvenance,
     QAItem,
 )
+from .tracks.kg_poc import ALL_KG_QUERY_TYPES
 
 # 段1+段2 が安定するまでの比較基準として prompts/generate_kg_path.md (一体型) を残す
 COMPOSE_PROMPT = "prompts/kg_compose_chain.md"
@@ -52,11 +54,45 @@ WRITE_STAR_PROMPT = "prompts/kg_write_qa_star.md"
 WRITE_TRACE_PROMPT = "prompts/kg_write_qa_trace.md"
 COMPOSE_EXCLUSION_PROMPT = "prompts/kg_compose_exclusion.md"
 WRITE_NEGATION_PROMPT = "prompts/kg_write_qa_negation.md"
+DECOY_WRITE_PROMPT = "prompts/kg_write_qa_decoy.md"
 
 LLMCaller = Callable[..., Any]
 
 
+# ---------------- 素材を削る数値の正本 (2026-08-08 監査) ----------------
+# 検品や候補選別の閾値を各所の直値・既定引数に埋めると、コーパスや埋め込み
+# モデルを差し替えたときに「どの数値が素材を削ったのか」を事後に切り分けられない
+# (2026-08-07 の max_position_spread=50 と同型の事故)。値はここだけに置き、
+# 設計書の型別定義表と突き合わせる。動かすときは設計書を先に直す。
+
+MIN_EXPOSED_FORM_LEN = 2          # 露出・要素照合で見る最短の表記長 (中間露出/要素網羅で共用)
+EMPTY_ANSWER_MARGIN = 12          # 終端表記 + この文字数以内の回答は「復唱のみ」とみなす
+LEXICAL_LEAK_TOP_K = 5            # 質問だけの BM25 でこの順位までに終端が来たら語彙漏れ
+MIN_CORPUS_FOR_LEAK_CHECK = 50    # これ未満のコーパスでは上位K位に判別力が無い
+MIN_DOCID_FRAGMENT_LEN = 3        # doc_id の断片をファイル名露出とみなす最短長
+DECOY_SIM_FLOOR = 0.75            # デコイ候補の余弦下限
+DECOY_MIN_POSITION_GAP = 30       # 同一文書内の対を残す位置差の下限
+DECOY_MAX_PER_DOC_PAIR = 2        # 同じ文書対から採る上限
+
+# 星 (aggregation) の素材条件。素材列挙 (kg.iter_star_groups)・段0・段1後の3段が
+# 同じ値を見るように、kg 側に正本があればそれを引く (無ければここが正本)。
+MIN_STAR_BRANCHES = getattr(kg, "MIN_STAR_BRANCHES", 3)
+MIN_STAR_SUPPORT_CHUNKS = getattr(kg, "MIN_STAR_SUPPORT_CHUNKS", 2)
+
+
 # ---------------- プロンプト素材の整形 ----------------
+# 経路記法の見出しは定数で持ち、整形と検品が同じ文字列を見るようにする。
+# 見出しを改名したときに検品側だけ古い語で残る二重管理を作らないため
+# (2026-08-08 監査 rank 8: 検品語に一般名詞「始点」「終端」を入れていたため、
+#  原文語を書いただけの decoy を棄却していた)。
+PATH_START_LABEL = "**始点**"
+PATH_END_LABEL = "**終端**"
+
+
+def _edge_heading(i: int) -> str:
+    """経路ブロックが出す辺の見出し (「辺1:」)。検品もこの書式で照合する。"""
+    return f"辺{i}:"
+
 
 def _format_path_block(path: kg.KGPath) -> str:
     lines = ["```"]
@@ -64,10 +100,10 @@ def _format_path_block(path: kg.KGPath) -> str:
     lines.append("```")
     lines.append("")
     for i, e in enumerate(path.edges, 1):
-        lines.append(f"- 辺{i}: 「{e.subject}」 --{e.predicate}--> 「{e.object}」"
+        lines.append(f"- {_edge_heading(i)} 「{e.subject}」 --{e.predicate}--> 「{e.object}」"
                      f"（{e.extraction_count} 箇所から抽出）")
     lines.append("")
-    lines.append(f"**始点**: {path.nodes[0]} / **終端**: {path.nodes[-1]}")
+    lines.append(f"{PATH_START_LABEL}: {path.nodes[0]} / {PATH_END_LABEL}: {path.nodes[-1]}")
     return "\n".join(lines)
 
 
@@ -182,19 +218,28 @@ def _rationale_cross_overlap_error(
 
 
 def _vacuous_answer(path: kg.KGPath, answer: str) -> bool:
-    """回答が終端ノード名の言い換えだけで、事実の中身が無いか。"""
+    """回答が終端ノード名の言い換えだけで、事実の中身が無いか。
+
+    余白は EMPTY_ANSWER_MARGIN (共通規則)。終端表記が長いコーパスでは余白が
+    相対的に狭くなる弱点があるので、値を動かすときは設計書の共通規則欄も直す。
+    """
     norm_answer = normalize(answer)
     terminal = path.edges[-1]
     for form in (terminal.object_forms or [terminal.object]):
         norm_form = normalize(form)
         if norm_form and norm_form in norm_answer:
-            if len(norm_answer) <= len(norm_form) + 12:
+            if len(norm_answer) <= len(norm_form) + EMPTY_ANSWER_MARGIN:
                 return True
     return False
 
 
 def _question_exposes_intermediate(path: kg.KGPath, question: str) -> Optional[str]:
-    """中間ノードを質問に書いて1ホップ化していないか確認する。"""
+    """中間ノードを質問に書いて1ホップ化していないか確認する。
+
+    最短表記長は MIN_EXPOSED_FORM_LEN で要素網羅検品と共用する。以前ここだけ
+    3文字だったため「配管」「溶接」のような2文字の中間ノードが素通りし、
+    実質1ホップの問いが multi_hop として出荷されていた (2026-08-08 監査 rank 9)。
+    """
     if len(path.edges) < 2:
         return None
     edge = path.edges[0]
@@ -202,7 +247,8 @@ def _question_exposes_intermediate(path: kg.KGPath, question: str) -> Optional[s
     normalized_question = normalize(question)
     for form in forms:
         normalized_form = normalize(form)
-        if len(normalized_form) >= 3 and normalized_form in normalized_question:
+        if (len(normalized_form) >= MIN_EXPOSED_FORM_LEN
+                and normalized_form in normalized_question):
             return form
     return None
 
@@ -246,9 +292,6 @@ def _check_intermediate_hidden(ctx: CheckContext) -> Optional[str]:
     return f"中間ノードが質問に露出: {exposed}" if exposed else None
 
 
-LEXICAL_LEAK_TOP_K = 5
-
-
 def _check_lexical_leak(ctx: CheckContext) -> Optional[str]:
     """質問が終端チャンクの語彙を漏らしていないか (BM25 だけで直撃されないか)。
 
@@ -256,11 +299,18 @@ def _check_lexical_leak(ctx: CheckContext) -> Optional[str]:
     繋がりが中間チャンクにしか無い」こと。終端の見出し語を質問に書くと BM25 が
     一発で当てて評価にならない (実測: 容器の再検査問が該当)。事後スクリーニングと
     同じ物差しを生成時に前倒しする。
+
+    この検品が外れると「検索で直撃できる問い」が multi_hop として通り、しかも
+    棄却数が減るので品質が上がったように見える。外した事実は必ず1行残す
+    (2026-08-08 監査 rank 19)。
     """
     if ctx.bm25 is None or ctx.chunk_row is None:
+        print("[kg-generate] 語彙漏れ検品を省略: BM25 索引が渡されていない")
         return None
-    # 小さいコーパスでは「上位5位」に判別力が無い (2チャンクなら必ず上位)。
-    if len(ctx.chunk_row) < 50:
+    # 小さいコーパスでは「上位K位」に判別力が無い (2チャンクなら必ず上位)。
+    if len(ctx.chunk_row) < MIN_CORPUS_FOR_LEAK_CHECK:
+        print(f"[kg-generate] 語彙漏れ検品を省略: コーパス {len(ctx.chunk_row)} チャンク "
+              f"< MIN_CORPUS_FOR_LEAK_CHECK={MIN_CORPUS_FOR_LEAK_CHECK}")
         return None
     terminal = ctx.support[-1]
     row = ctx.chunk_row.get(terminal)
@@ -298,7 +348,7 @@ def _check_element_coverage(ctx: CheckContext) -> Optional[str]:
     unsupported = []
     for e in ctx.path.edges:
         forms = [normalize(f) for f in (e.object_forms or [e.object])]
-        forms = [f for f in forms if len(f) >= 2]
+        forms = [f for f in forms if len(f) >= MIN_EXPOSED_FORM_LEN]
         if not any(f in norm_answer for f in forms):
             missing.append(e.object)
             continue
@@ -311,34 +361,102 @@ def _check_element_coverage(ctx: CheckContext) -> Optional[str]:
     return None
 
 
+# 識別子の定義 (設計書「認定ゲート」節、2026-08-08 確定):
+#   条番号・項番号・様式番号・別表番号に限る。**数値+単位は識別子でない**
+#   (「1.5倍」「六年」で traceability を合格にしていたのが監査 rank 13)。
+# 規則名は文書メタ由来のものだけを識別子と認めるが、この工程には文書メタの
+# 台帳が渡っていないので照合対象に入れない。入れない側の誤りは「合格しやすくなる」
+# 方向で、原文に識別子が無いチャンクを棄却しない設計方針と同じ向きになる。
+_IDENTIFIER_RES = [
+    re.compile(r"第\d+条(?:の\d+)?"),
+    re.compile(r"第\d+項"),
+    re.compile(r"様式第?\d+(?:号)?"),
+    re.compile(r"別表第?\d+(?:号)?"),
+]
+
+
+def identifier_tokens(text: str) -> list[str]:
+    """原文から識別子 (条・項・様式・別表の番号) を正規化表記で取り出す。"""
+    norm = normalize_numbers(text)
+    out: list[str] = []
+    for pat in _IDENTIFIER_RES:
+        for m in pat.finditer(norm):
+            if m.group(0) not in out:
+                out.append(m.group(0))
+    return out
+
+
 def _check_trace_identifiers(ctx: CheckContext) -> Optional[str]:
-    """traceability: 回答に各辺の出典の識別子 (条番号等) が全て含まれるか。
+    """traceability: 識別子を持つ根拠が、その識別子を回答に出しているか。
 
     この型は「根拠の系譜」を答えさせるので、multi_hop と逆に識別子の明記が必須。
-    各根拠チャンクの固有値 (第N条・様式番号・数値+単位) のいずれかが回答に
-    現れることを求める。順序は要求しない — 「火技省令に適合させる必要があり、
-    それは第82条が求めている」のような自然な逆順の説明文まで弾いてしまうため
-    (2026-08-03 パイロットで改訂)。
-    """
-    from .evidence import normalize_numbers, salient_tokens
+    順序は要求しない — 「火技省令に適合させる必要があり、それは第82条が求めている」
+    のような自然な逆順の説明文まで弾いてしまうため (2026-08-03 パイロットで改訂)。
 
+    識別子を1つも含まないチャンクは**検査対象外**にする (2026-08-08 監査 rank 13)。
+    原文に条番号が無いことは QA の不良ではないのに、旧実装は「識別子が1つも
+    回答に無い」として棄却しており、識別子を持たないチャンク (chunks_plant で
+    614/3175) を根拠に含む traceability が原因不明で全滅していた。
+    """
     answer_norm = normalize_numbers(ctx.qa.answer)
+    checked = 0
     for cid in ctx.support:
         chunk = ctx.chunks_by_id.get(cid)
         if chunk is None:
             continue
-        toks = [t for t in salient_tokens(chunk.text) if t in answer_norm]
-        if not toks:
-            return f"根拠 {cid} の識別子が回答に無い"
+        ids = identifier_tokens(chunk.text)
+        if not ids:
+            continue            # 検査対象外 (棄却しない)
+        checked += 1
+        if not any(t in answer_norm for t in ids):
+            return f"根拠 {cid} の識別子 {ids[:3]} が回答に無い"
+    if checked == 0:
+        # 全ての根拠が検査対象外 = この型の合格条件を機械では確かめていない。
+        # 黙って通すと「検品を通った」と読めてしまうので理由を残す
+        print(f"[kg-generate] 識別子系列の検品は対象外: 根拠 {ctx.support} に "
+              f"条・項・様式・別表の番号が無い")
     return None
 
 
+# ---- 受理語彙 (型別検品表の隣に置く。プロンプトの言い回しと対で動く) ----
+# 生成プロンプトの言い回しを直すと、こちらが古いままで全件棄却になる
+# (2026-08-08 監査 rank 21: 「該当する規定は見当たりません」に直した瞬間に
+#  decoy が 0 件になる)。既定は下の表、実行時は環境変数で差し替えられる。
+
 # 適用除外の文言に加えて、明示的な禁止・不使用の文言も認める (2026-08-03 設計改訂。
 # 禁止も原文明示の否定であり、KG欠損由来の捏造否定にはならない)
-_EXCLUSION_WORDS = ("除く", "除き", "適用しない", "適用されない", "この限りでない",
-                    "適用を受けない", "準用しない", "以外",
-                    "使用してはならない", "使用しない", "用いてはならない",
-                    "設けてはならない", "してはならない")
+DEFAULT_EXCLUSION_WORDS = ("除く", "除き", "適用しない", "適用されない", "この限りでない",
+                           "適用を受けない", "準用しない", "以外",
+                           "使用してはならない", "使用しない", "用いてはならない",
+                           "設けてはならない", "してはならない")
+
+# decoy の棄権表現。prompts/kg_write_qa_decoy.md の指示文と対で保つ
+DEFAULT_ABSTAIN_WORDS = ("確認できない", "適用されない", "適用されません", "根拠がない",
+                         "根拠はない", "定められていない", "規定されていない", "存在しない")
+
+EXCLUSION_WORDS_ENV = "KG_EXCLUSION_WORDS"
+ABSTAIN_WORDS_ENV = "KG_ABSTAIN_WORDS"
+
+_WARNED_WORDLIST_ENV: set[str] = set()
+
+
+def _configured_words(env_name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """受理語彙を環境変数 (読点・カンマ・改行区切り) で差し替える。
+
+    差し替えた事実は1度だけログに出す — 語彙が変われば棄却率が丸ごと変わるため、
+    どの語で判定したのかが実行記録に残らないと後から読めない。
+    """
+    raw = (os.environ.get(env_name) or "").strip()
+    if not raw:
+        return default
+    words = tuple(w.strip() for w in re.split(r"[,、\n]", raw) if w.strip())
+    if not words:
+        return default
+    if env_name not in _WARNED_WORDLIST_ENV:
+        _WARNED_WORDLIST_ENV.add(env_name)
+        print(f"[kg-generate] {env_name} で受理語彙を差し替え ({len(words)} 語): "
+              f"{list(words)[:5]}...")
+    return words
 
 
 def _check_exclusion_wording(ctx: CheckContext) -> Optional[str]:
@@ -347,18 +465,101 @@ def _check_exclusion_wording(ctx: CheckContext) -> Optional[str]:
     除外文言の無い否定は「KG に無い＝存在しない」型の捏造否定に流れるため、
     原文の明示除外だけを認める (設計書の禁止事項)。
     """
+    words = _configured_words(EXCLUSION_WORDS_ENV, DEFAULT_EXCLUSION_WORDS)
     for r in ctx.qa.rationale:
-        if any(w in (r.text or "") for w in _EXCLUSION_WORDS):
+        if any(w in (r.text or "") for w in words):
             return None
-    return "引用に明示的な除外文言 (除く/適用しない/この限りでない等) が無い"
+    return (f"引用に明示的な除外文言 ({'/'.join(words[:3])}等) が無い "
+            f"(要人手確認: 原文の言い回しが受理語彙に無いだけの可能性)")
 
 
-# 共通規則: 全ての型に適用。逐語・重複・無内容・造語。
+def _check_abstention_answer(ctx: CheckContext) -> Optional[str]:
+    """decoy: 回答が棄権 (適用されない/根拠が確認できない) を明示しているか。"""
+    words = _configured_words(ABSTAIN_WORDS_ENV, DEFAULT_ABSTAIN_WORDS)
+    if any(w in (ctx.qa.answer or "") for w in words):
+        return None
+    return (f"回答が棄権 ({'/'.join(words[:3])}等) を明示していない "
+            f"(要人手確認: 棄権表現が受理語彙に無いだけの可能性)")
+
+
+def _machine_labels(material) -> list[str]:
+    """素材そのものが持つ内部ラベル (大文字とアンダースコアだけの述語)。
+
+    検品語を手で並べると、述語を改名したときに検品側だけ古い語で残る。
+    素材から導けば改名に自動で追随する (2026-08-08 監査 rank 8)。
+    """
+    out: list[str] = []
+    for e in (getattr(material, "edges", None) or []):
+        p = getattr(e, "predicate", "") or ""
+        if re.fullmatch(r"[A-Z][A-Z0-9_]*", p) and p not in out:
+            out.append(p)
+    return out
+
+
+def _path_notation_markers(material) -> list[str]:
+    """_format_path_block が実際に出す経路記法の見出し。"""
+    n = len(getattr(material, "edges", None) or [])
+    return [PATH_START_LABEL, PATH_END_LABEL] + [_edge_heading(i)
+                                                 for i in range(1, n + 1)]
+
+
+def _check_meta_leak(ctx: CheckContext) -> Optional[str]:
+    """decoy: 内部の関係ラベル・経路記法が問いや回答に漏れていないか。
+
+    照合するのは機械語 (SIMILAR_BUT_UNRELATED 等) と経路記法の見出しだけ。
+    「始点」「終端」のような一般名詞は入れない — 「溶接線の始点から十五
+    メートルごと」のような原文語を書いただけの decoy を棄却してしまい、
+    実際に data/kg_decoy_v1 の 4/4 件を壊していた (2026-08-08 監査 rank 8)。
+    """
+    text = (ctx.qa.question or "") + (ctx.qa.answer or "")
+    hits = [w for w in _machine_labels(ctx.path) + _path_notation_markers(ctx.path)
+            if w in text]
+    return f"内部用語の混入: {hits}" if hits else None
+
+
+def _strip_internal_labels(text: str, material) -> str:
+    """段2へ渡す素材から内部語だけを取り除く (保存する理由文には触らない)。
+
+    旧実装は段1の不成立理由から「始点」「終端」まで無条件に空文字へ置換し、
+    保存済みの composition_reason を「からへの関係が成立しない」に壊していた。
+    抜き取りの対象は機械語と経路記法に限り、壊れた文を残さないよう
+    保存側は原文のまま持つ (2026-08-08 監査 rank 8)。
+    """
+    out = text or ""
+    for w in _machine_labels(material) + _path_notation_markers(material):
+        out = out.replace(w, "")
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
+def _docid_fragments(doc_ids: set[str]) -> list[str]:
+    """読み込んだ doc_id 集合から、露出の照合に使う機械語の断片を組み立てる。
+
+    旧実装はいまのコーパスの命名規則 (技報 vNNnN_NN / 法令 NN_ローマ字) を
+    正規表現に直書きしており、同時に稼働している chunks_synth (SYN01_…) では
+    0/25 文書しか一致しない空振りだった (2026-08-08 監査 rank 7)。
+    命名規則を推測せず、実データの doc_id を区切りで割った断片から作る。
+
+    断片は「英数字だけで長さ MIN_DOCID_FRAGMENT_LEN 以上、英字を含む」ものに限る。
+    日本語の断片 (「設備保全管理規程」「白波」) は実務者が知っている文書名や
+    一般語であり、質問に出ても内部名の露出ではないため照合しない。
+    """
+    frags: set[str] = set()
+    for d in doc_ids:
+        for part in re.split(r"[_\s/\\|]+", d or ""):
+            if (len(part) >= MIN_DOCID_FRAGMENT_LEN
+                    and re.fullmatch(r"[0-9A-Za-z]+", part)
+                    and re.search(r"[A-Za-z]", part)):
+                frags.add(part.lower())
+    return sorted(frags)
+
+
 def _check_docid_leak(ctx: CheckContext) -> Optional[str]:
     """質問・回答に内部の doc_id (ファイル名) が露出していないか。
 
     実測 (2026-08-04 decoy): 質問文に `33_denji_kisoku` がそのまま出た。
     実務者はファイル名を知らないので、出た時点で問いとして成立しない。
+    完全一致だけだと「v49n4_01（正式名）」のような前半だけの露出を逃すので、
+    doc_id 集合から作った断片でも照合する。
     """
     text = (ctx.qa.question or "") + (ctx.qa.answer or "")
     ids = {c.doc_id for c in ctx.chunks_by_id.values()} if ctx.chunks_by_id else set()
@@ -367,13 +568,14 @@ def _check_docid_leak(ctx: CheckContext) -> Optional[str]:
     hits = [d for d in ids if d and d in text]
     if hits:
         return f"内部ファイル名の露出: {hits[:3]}"
-    # 完全一致だけだと「v49n4_01（正式名）」のような前半だけの露出を逃す。
-    # ファイル名の接頭パターン (技報: vNNnN_NN / 法令: NN_ローマ字) も検出する
-    import re as _re
-    m = _re.search(r"v\d+n\d+_\d+|(?<![0-9A-Za-z])\d{2}_[a-z]+", text)
-    return f"内部ファイル名の露出 (接頭形): {m.group(0)}" if m else None
+    lowered = text.lower()
+    frag_hits = [f for f in _docid_fragments(ids) if f in lowered]
+    if frag_hits:
+        return f"内部ファイル名の露出 (断片): {frag_hits[:3]}"
+    return None
 
 
+# 共通規則: 全ての型に適用。逐語・重複・無内容・造語。
 COMMON_CHECKS: list[tuple[str, CheckFn]] = [
     ("根拠不適合", _check_rationale),
     ("ファイル名露出", _check_docid_leak),
@@ -414,12 +616,39 @@ CHECKS_BY_TYPE: dict[str, list[tuple[str, CheckFn]]] = {
     "kg_missing": [
         ("中間露出", _check_intermediate_hidden),
     ],
+    # kg_decoy: 棄権が正解。棄権の明示がこの系統の唯一の合格条件なので、
+    # 表の定義位置に置く (以前は約900行離れた後付け登録で、キーが噛み合わなく
+    # なっても黙って検品ゼロになっていた。2026-08-08 監査 rank 22)
+    "kg_decoy": [
+        ("棄権明示", _check_abstention_answer),
+        ("内部用語", _check_meta_leak),
+    ],
 }
+
+# 検品テーブルのキーは型の列挙 (tracks.kg_poc) と系統キー (kg_path.source と同語)。
+# 型を足したのに検品規則を書き忘れたら、出荷ではなく取り込みの時点で落とす。
+KG_SOURCE_CHECK_KEYS: tuple[str, ...] = ("kg_missing", "kg_decoy")
+ALL_CHECK_KEYS: tuple[str, ...] = tuple(ALL_KG_QUERY_TYPES) + KG_SOURCE_CHECK_KEYS
+
+_unregistered = [k for k in ALL_CHECK_KEYS if k not in CHECKS_BY_TYPE]
+if _unregistered:
+    raise RuntimeError(
+        f"CHECKS_BY_TYPE に型別規則が無いキー: {_unregistered}。"
+        "意図的に規則ゼロの型も空リストで明示登録すること (設計原則3)")
 
 
 def run_checks(ctx: CheckContext, query_type: str) -> Optional[str]:
-    """共通 + 型別の検品を順に掛け、最初の違反を「規則名: 理由」で返す。"""
-    for name, fn in COMMON_CHECKS + CHECKS_BY_TYPE.get(query_type, []):
+    """共通 + 型別の検品を順に掛け、最初の違反を「規則名: 理由」で返す。
+
+    表に無いキーは例外にする (fail-closed)。以前は .get(key, []) だったため、
+    キーの綴りが噛み合わなくなると型別規則ゼロのまま素通りしていた
+    (decoy なら唯一の合格条件である棄権明示が黙って外れる。監査 rank 22)。
+    """
+    if query_type not in CHECKS_BY_TYPE:
+        raise ValueError(
+            f"検品テーブルに無いキー: {query_type!r} "
+            f"(登録済み: {sorted(CHECKS_BY_TYPE)})")
+    for name, fn in COMMON_CHECKS + CHECKS_BY_TYPE[query_type]:
         err = fn(ctx)
         if err:
             return f"{name}: {err}"
@@ -810,7 +1039,9 @@ def generate_from_paths(
             apply_term_substitution(qa, path)
             f.write(qa.model_dump_json() + "\n")
             written += 1
-            docs = sorted({c.split("__")[0] for c in support})
+            # doc_id の正本は Chunk.doc_id (chunk_id を割った文字列ではない)
+            docs = sorted({chunks_by_id[c].doc_id for c in support
+                           if c in chunks_by_id})
             print(f"[kg-generate] {qa.qa_id} {qa.kg_query_type} docs={'+'.join(docs)}")
 
     print(f"[kg-generate] wrote {written} QAs → {out_path}")
@@ -867,11 +1098,15 @@ def generate_from_stars(
             if max_items is not None and written >= max_items:
                 break
             # ---- 段0: 枝ごとの含意 (落ちた枝は捨てる) ----
+            # 最小枝数は素材列挙・段0・段1後で同じ定数を見る (監査 rank 17)
             verified = kg.verify_star_provenance(
                 star, texts, model=provenance_model, llm=provenance_llm,
+                min_branches=MIN_STAR_BRANCHES,
             )
             if verified is None:
                 n_provenance_rejected += 1
+                print(f"[kg-generate] 段0棄却 ({star.center}): 原文で裏付いた枝が "
+                      f"MIN_STAR_BRANCHES={MIN_STAR_BRANCHES} に満たない")
                 continue
 
             # ---- 段1: 文脈の同一性判定 ----
@@ -892,12 +1127,18 @@ def generate_from_stars(
             if excluded:
                 verified = [v for v in verified if v.edge.object not in excluded]
                 print(f"[kg-generate] 別文脈の要素を除外: {excluded}")
-                if len(verified) < 3:
-                    n_compose_rejected += 1
-                    continue
-            support = list(dict.fromkeys(v.source_chunk_id for v in verified))
-            if len(support) < 2:
+            if len(verified) < MIN_STAR_BRANCHES:
                 n_compose_rejected += 1
+                print(f"[kg-generate] 段1後の枝が {len(verified)} 本 "
+                      f"(< MIN_STAR_BRANCHES={MIN_STAR_BRANCHES}) — 星を棄却: "
+                      f"{star.center}")
+                continue
+            support = list(dict.fromkeys(v.source_chunk_id for v in verified))
+            if len(support) < MIN_STAR_SUPPORT_CHUNKS:
+                n_compose_rejected += 1
+                print(f"[kg-generate] 段1後の出典が {len(support)} チャンク "
+                      f"(< MIN_STAR_SUPPORT_CHUNKS={MIN_STAR_SUPPORT_CHUNKS}) — "
+                      f"1チャンクで答えられる列挙なので棄却: {star.center}")
                 continue
 
             # ---- 段2: QA 作成 ----
@@ -1279,32 +1520,7 @@ def generate_from_references(
 
 
 # ---------------- KG-decoy 系統 (関係の無い類似対 → 棄権が正解) ----------------
-
-DECOY_WRITE_PROMPT = "prompts/kg_write_qa_decoy.md"
-
-_ABSTAIN_WORDS = ("確認できない", "適用されない", "適用されません", "根拠がない",
-                  "根拠はない", "定められていない", "規定されていない", "存在しない")
-
-
-def _check_abstention_answer(ctx: CheckContext) -> Optional[str]:
-    """decoy: 回答が棄権 (適用されない/根拠が確認できない) を明示しているか。"""
-    if any(w in (ctx.qa.answer or "") for w in _ABSTAIN_WORDS):
-        return None
-    return "回答が棄権 (適用されない/根拠が確認できない) を明示していない"
-
-
-_META_WORDS = ("SIMILAR_BUT_UNRELATED", "NO_RELATION", "始点", "終端", "辺1", "辺2")
-
-
-def _check_meta_leak(ctx: CheckContext) -> Optional[str]:
-    """decoy: 内部の関係ラベル・経路用語が問いや回答に漏れていないか。"""
-    text = (ctx.qa.question or "") + (ctx.qa.answer or "")
-    hits = [w for w in _META_WORDS if w in text]
-    return f"内部用語の混入: {hits}" if hits else None
-
-
-CHECKS_BY_TYPE["kg_decoy"] = [("棄権明示", _check_abstention_answer),
-                              ("内部用語", _check_meta_leak)]
+# 検品規則 (棄権明示・内部用語) は CHECKS_BY_TYPE の定義位置に置いてある。
 
 
 def find_decoy_pairs(
@@ -1314,29 +1530,41 @@ def find_decoy_pairs(
     chunk_nodes: dict[str, set],
     *,
     top_n: int = 40,
-    sim_floor: float = 0.75,
+    sim_floor: float = DECOY_SIM_FLOOR,
+    min_position_gap: int = DECOY_MIN_POSITION_GAP,
+    max_per_doc_pair: int = DECOY_MAX_PER_DOC_PAIR,
 ) -> list[tuple[Chunk, Chunk, float]]:
     """埋め込み類似が高いのに、参照関係も KG 上の繋がりも無い異文書対を列挙する。
 
     現行方式が「危険なので捨てていた」素材の転用。表面的な類似に釣られて
     誤った根拠で答えないか (棄権できるか) を測るデコイになる。
     関係の最終確認は段1 (合成判定の不成立) が行うので、ここは候補出しに徹する。
+
+    3つの閾値は既定引数でなく名前つき定数 (CLI から動かせる) にしてある。
+    埋め込みモデルを差し替えると余弦の目盛りが変わり、候補が 0 対になって
+    判別コアの decoy が丸ごと空のまま正常終了していた (2026-08-08 監査 rank 10)。
+    どの値で何対を落としたかは必ずログに残す。
     """
-    import numpy as np
+    print(f"[kg-generate] デコイ候補の採用値: 類似下限={sim_floor} / "
+          f"同一文書内の位置差下限={min_position_gap} / "
+          f"文書対あたり上限={max_per_doc_pair} / 採用上限={top_n}")
 
     sims = embeddings @ embeddings.T
     n = len(chunks)
+    n_below_floor = n_near_position = n_same_section = 0
     cand: list[tuple[float, int, int]] = []
     for i in range(n):
         row = sims[i]
         for j in range(i + 1, n):
             if row[j] < sim_floor:
+                n_below_floor += 1
                 continue
             if chunks[i].doc_id == chunks[j].doc_id:
                 # 同一文書は原則除外だが、位置が大きく離れた高類似対は
                 # 「同一法体系内の適用区画違い」(30m の罠型) の候補として残す
                 # (2026-08-04: 本番ベンチで KG-ON の急所と実証された型)
-                if abs(chunks[i].position - chunks[j].position) < 30:
+                if abs(chunks[i].position - chunks[j].position) < min_position_gap:
+                    n_near_position += 1
                     continue
                 # 同じ章・節に属する対は除外 — 同じ別表の行同士のような
                 # 「実は関係のある対」を掴む (実測: SUS材の表の行2つを
@@ -1344,26 +1572,39 @@ def find_decoy_pairs(
                 si = chunks[i].section_path[0] if chunks[i].section_path else ""
                 sj = chunks[j].section_path[0] if chunks[j].section_path else ""
                 if si == sj:
+                    n_same_section += 1
                     continue
             cand.append((float(row[j]), i, j))
     cand.sort(reverse=True)
 
     out: list[tuple[Chunk, Chunk, float]] = []
     seen_docs: dict[tuple[str, str], int] = {}
+    n_related = n_doc_pair_full = 0
     for sim, i, j in cand:
         a, b = chunks[i], chunks[j]
         # 実関係のある対を除く: 明示参照 (どちら向きでも) or KG 上の共有ノード
-        if policy.named_reference(a, b.doc_id) is not None: continue
-        if policy.named_reference(b, a.doc_id) is not None: continue
-        if chunk_nodes.get(a.chunk_id, set()) & chunk_nodes.get(b.chunk_id, set()):
+        if (policy.named_reference(a, b.doc_id) is not None
+                or policy.named_reference(b, a.doc_id) is not None
+                or (chunk_nodes.get(a.chunk_id, set())
+                    & chunk_nodes.get(b.chunk_id, set()))):
+            n_related += 1
             continue
         key = tuple(sorted((a.doc_id, b.doc_id)))
-        if seen_docs.get(key, 0) >= 2:     # 同じ文書対からは2問まで
+        if seen_docs.get(key, 0) >= max_per_doc_pair:
+            n_doc_pair_full += 1
             continue
         seen_docs[key] = seen_docs.get(key, 0) + 1
         out.append((a, b, sim))
         if len(out) >= top_n:
             break
+
+    print(f"[kg-generate] デコイ候補 {len(out)} 対 "
+          f"(類似下限未満 {n_below_floor} / 同一文書の近接 {n_near_position} / "
+          f"同一章節 {n_same_section} / 実関係あり {n_related} / "
+          f"文書対の上限超過 {n_doc_pair_full})")
+    if not out:
+        print("[kg-generate] 警告: デコイ候補が0対 — 埋め込みモデルを替えると余弦の"
+              "目盛りが変わる。--decoy-sim-floor を下げるか位置差を見直すこと")
     return out
 
 
@@ -1398,6 +1639,7 @@ def generate_from_decoys(
 
     written = 0
     n_not_decoy = n_check_rejected = n_failed = 0
+    n_wording_unmet = 0    # 棄権語に当たらなかっただけの落ち (要人手確認)
     with out_path.open("w", encoding="utf-8") as f:
         for a, b, sim in pairs:
             if max_items is not None and written >= max_items:
@@ -1431,14 +1673,19 @@ def generate_from_decoys(
                       f"{a.chunk_id} × {b.chunk_id}")
                 continue
             no_relation_reason = (reject_reason or "関係を裏付ける原文が無い")
-            for w in _META_WORDS:
-                no_relation_reason = no_relation_reason.replace(w, "")
+            # 段2へ渡す素材からだけ内部語を除く。保存する理由文は原文のまま持つ
+            # (旧実装は「始点」「終端」まで削って composition_reason を
+            #  「からへの関係が成立しない」に壊していた。監査 rank 8)
+            prompt_reason = _strip_internal_labels(no_relation_reason, path)
+            if prompt_reason != no_relation_reason:
+                print(f"[kg-generate] 段1理由に内部語が混入 (段2への素材からのみ除去): "
+                      f"{a.chunk_id} × {b.chunk_id}")
 
             qa_caller = llm or llm_generate
             try:
                 raw = qa_caller(
                     prompt=render(write_body, {
-                        "relation_sentence": no_relation_reason,
+                        "relation_sentence": prompt_reason,
                         "evidence_block": _format_evidence_block(
                             path, support, chunks_by_id),
                     }),
@@ -1471,6 +1718,11 @@ def generate_from_decoys(
                 else:
                     print(f"[kg-generate] skip ({err})")
                     n_check_rejected += 1
+                    # 「棄権語に当たらない」だけの落ちは素材でも捏造でもなく
+                    # 受理語彙とプロンプトのずれで起きる。層別に数えて
+                    # 人手確認へ回せるようにする (2026-08-08 監査 rank 21)
+                    if err and "棄権明示" in err:
+                        n_wording_unmet += 1
                 continue
             qa.kg_path.source = "kg_decoy"
             f.write(qa.model_dump_json() + "\n")
@@ -1479,5 +1731,10 @@ def generate_from_decoys(
 
     print(f"[kg-generate] wrote {written} QAs → {out_path}")
     print(f"[kg-generate] デコイ不採用 (関係成立) {n_not_decoy} / "
-          f"段3検品落ち {n_check_rejected} / 生成失敗 {n_failed}")
+          f"段3検品落ち {n_check_rejected} (うち棄権語に当たらず要人手確認 "
+          f"{n_wording_unmet}) / 生成失敗 {n_failed}")
+    if n_wording_unmet:
+        print(f"[kg-generate] 棄権表現が受理語彙に無いだけの落ちが {n_wording_unmet} 件 — "
+              f"プロンプトの言い回しを変えたなら {ABSTAIN_WORDS_ENV} で受理語彙を"
+              f"合わせること")
     return out_path

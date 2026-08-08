@@ -535,9 +535,11 @@ def sync_kg_query_type_from_retrieval(qa: QAItem) -> bool:
     kp, rv = qa.kg_path, qa.rag_verification
     if kp is None or rv is None or len(kp.edges) < 2:
         return False
-    # 「終端」概念は連鎖にしかない。星 (aggregation) や除外 (negation) の型は
-    # ここで確定しない — aggregation の実測は retrieval_hit_ratio (要素チャンクの
-    # top-k 被覆率) が既に担っている。
+    # 「終端」概念は連鎖にしかない。星 (aggregation) や除外 (negation) の合否は
+    # この関数では切らず、型別表の認定ゲート certify_kg_items が切る
+    # (2026-08-08: それまで星は shape != "chain" でここを抜けたきり、設計書が
+    #  定める被覆率の合格線を掛ける工程がどこにも無く、被覆率 1.0 の星が
+    #  aggregation のまま出荷されていた)。
     if kp.shape != "chain":
         return False
     # decoy は「関係が無い」ことが正解で、終端の検索可否に意味が無い
@@ -560,6 +562,193 @@ def sync_kg_query_type_from_retrieval(qa: QAItem) -> bool:
     note = f"[型確定 {datetime.now():%Y-%m-%d}] {detail} のため {old}→{target}"
     qa.difficulty_rationale = (qa.difficulty_rationale + " / " + note).strip(" /")
     return True
+
+
+# ---------------- 認定ゲート (2026-08-08 設計書「認定ゲート」節) ----------------
+# 原則1「ラベルは実測で確定する」は、実測を記録することではなく**実測で合否を切る**こと。
+# 合否は型別表 CERTIFY_BY_TYPE の1箇所だけで切り、結果は KGPathProvenance の
+# certified / certification_reason に残す。**不認定でも項目は捨てない** —
+# 対照群として持ち続け、「KG が要る」の集計から外すだけ。
+
+# 設計書の合格線はすべて厳格2段検索 (密+BM25 → fetch100 → 交差エンコーダ → top10)
+# の実測を前提にしている。密のみ・リランク無しの実測で「検索で届かない」を認めると、
+# 語彙一致で解ける問いまで KG 必要と誤認して優位を過大評価するので、
+# 検索の実測を根拠にする型 (multi_hop / aggregation) は方式もここで検査する。
+STRICT_RETRIEVAL_MODE = "hybrid_rerank"
+
+# aggregation の合格線 (設計書 型別定義表・認定ゲート表): 要素チャンクの
+# top-k 被覆率がこの値**未満**であること。1.0 = 全要素が検索だけで揃う星は
+# 「KG が要る」を名乗れない (v1 の3問はここを 3/3 で破ったまま出荷していた)。
+AGGREGATION_COVERAGE_CEILING = 1.0
+
+_NO_MEASUREMENT_REASON = "実測 (rag-verify) が無いため認定できない"
+
+
+def _weak_mode_reason(rv: RAGVerification) -> str:
+    return (f"実測が厳格2段検索でない (retrieval_mode={rv.retrieval_mode}) "
+            f"ため認定できない")
+
+
+def aggregation_coverage(qa: QAItem) -> Optional[float]:
+    """星型の要素チャンクが top-k にどれだけ揃ったか (被覆率) を返す。
+
+    要素チャンクの正本は `kg_path.edges[*].source_chunk_id` (枝ごとの含意を
+    確認した出典)。rationale 本文の逐語一致 (retrieval_hit_ratio) とは別物で、
+    「検索だけで列挙が揃うか」を見るこの型の合格線はチャンクの到達で測る。
+    要素が特定できないときは None (認定側で不認定に倒す)。
+    """
+    kp, rv = qa.kg_path, qa.rag_verification
+    if kp is None or rv is None:
+        return None
+    elements = list(dict.fromkeys(e.source_chunk_id for e in kp.edges))
+    if not elements:
+        return None
+    got = set(rv.retrieved_chunk_ids)
+    return sum(1 for c in elements if c in got) / len(elements)
+
+
+def _certify_multi_hop(qa: QAItem) -> tuple[bool, str]:
+    """終端チャンク ∉ top-k (検索必要性)。命中していれば single_fact へ降格済み。"""
+    rv, kp = qa.rag_verification, qa.kg_path
+    if rv is None:
+        return False, _NO_MEASUREMENT_REASON
+    if rv.retrieval_mode != STRICT_RETRIEVAL_MODE:
+        return False, _weak_mode_reason(rv)
+    if kp is None or not kp.edges:
+        return False, "経路の終端チャンクが特定できない (kg_path.edges が空)"
+    terminal = kp.edges[-1].source_chunk_id
+    if terminal in rv.retrieved_chunk_ids:
+        return False, f"終端チャンクが top-{rv.top_k} に直接命中 (経路を辿る必要がない)"
+    return True, f"終端チャンクが厳格2段検索の top-{rv.top_k} に入らない"
+
+
+def _certify_single_fact(qa: QAItem) -> tuple[bool, str]:
+    return True, "降格先そのもの (常に認定)"
+
+
+def _certify_aggregation(qa: QAItem) -> tuple[bool, str]:
+    """要素チャンクの top-k 被覆率 < 100%。揃ってしまう星は対照群に落とす。"""
+    rv = qa.rag_verification
+    if rv is None:
+        return False, _NO_MEASUREMENT_REASON
+    if rv.retrieval_mode != STRICT_RETRIEVAL_MODE:
+        return False, _weak_mode_reason(rv)
+    coverage = aggregation_coverage(qa)
+    if coverage is None:
+        return False, "要素チャンクが特定できない (kg_path.edges が空)"
+    if coverage < AGGREGATION_COVERAGE_CEILING:
+        return True, (f"要素チャンクの top-{rv.top_k} 被覆率 {coverage:.0%} "
+                      f"< {AGGREGATION_COVERAGE_CEILING:.0%}")
+    # 理由文は集計画面・端末にそのまま出るので、cp932 で落ちる記号 (em ダッシュ等) は使わない
+    return False, (f"要素チャンクが全て top-{rv.top_k} に揃う (被覆率 {coverage:.0%}) "
+                   f"ため、検索だけで解ける星として不認定")
+
+
+def _certify_traceability(qa: QAItem) -> tuple[bool, str]:
+    """識別子の照合は段3 (生成時の型別検品) が済ませている。"""
+    kp = qa.kg_path
+    if kp is None or not kp.edges:
+        return False, "経路の辺が無く出典識別子を照合できない"
+    return True, "回答に各辺の出典識別子が全て含まれることを段3で判定済み"
+
+
+def _certify_negation_exhaustive(qa: QAItem) -> tuple[bool, str]:
+    """除外・禁止文言の原文含意は段0/段1で済ませている。"""
+    kp = qa.kg_path
+    if kp is None or not kp.edges:
+        return False, "除外辺が無く原文の除外・禁止文言を照合できない"
+    return True, "原文の除外・禁止文言の含意を段0/段1で判定済み"
+
+
+def _certify_kg_missing(qa: QAItem) -> tuple[bool, str]:
+    return True, "実在参照であることが機械供給の条件そのもの"
+
+
+def _certify_kg_decoy(qa: QAItem) -> tuple[bool, str]:
+    return True, "棄権が正解のため検索到達は問わない (常に認定)"
+
+
+# 型別の認定条件。キーは kg_query_type、ただし供給系統が合格条件そのものを
+# 決める kg_missing / kg_decoy は KGPathProvenance.source をキーにする
+# (certify_key 参照)。**表に無いキーは不認定** (fail-closed)。
+CERTIFY_BY_TYPE: dict[str, Callable[[QAItem], tuple[bool, str]]] = {
+    "multi_hop": _certify_multi_hop,
+    "single_fact": _certify_single_fact,
+    "aggregation": _certify_aggregation,
+    "traceability": _certify_traceability,
+    "negation_exhaustive": _certify_negation_exhaustive,
+    "kg_missing": _certify_kg_missing,
+    "kg_decoy": _certify_kg_decoy,
+}
+
+# 設計書の表と型の列挙が食い違ったら (型を足して表を直し忘れたら) 気づけるように、
+# 網羅性は tests/test_rag_verify.py で凍結する。実行時は fail-closed で不認定。
+_UNKNOWN_TYPE_REASON = "認定表に無い型 ({key}) のため不認定 (fail-closed)"
+
+
+def certify_key(qa: QAItem) -> str:
+    """認定表の行を引くキー。供給系統 (kg_missing / kg_decoy) が型より優先する。"""
+    kp = qa.kg_path
+    if kp is None:
+        return ""
+    source = getattr(kp, "source", "kg_covered")
+    if source in ("kg_missing", "kg_decoy"):
+        return source
+    return qa.kg_query_type or ""
+
+
+def certify_kg_items(items: list[QAItem]) -> dict[str, int]:
+    """型別表で「KG が要る」を認定し、KGPathProvenance に結果を書く。
+
+    設計書「認定ゲート」節 (2026-08-08 追加) の実装。実測値を持つのがこの工程
+    なのでここに置く。関数単体で呼べる形にしてあり、既に出荷済みの JSONL に
+    後から掛け直せる (kg_path を持つ項目だけが対象)。
+
+    - multi_hop の型確定 (終端が top-k に直接命中したら single_fact へ降格) は
+      既存の sync_kg_query_type_from_retrieval をそのまま使う (挙動は不変)
+    - 不認定でも項目は捨てず型も据え置く。落とすのは certified の旗だけで、
+      対照群として残す
+    - 返り値は件数の内訳 (total / certified / uncertified / ... と
+      "certified:<キー>" 形式の型別内訳)。認定を通らなかった素材の数を
+      必ず外へ出すため
+    """
+    counts: dict[str, int] = {}
+
+    def bump(key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    for qa in items:
+        bump("total")
+        kp = qa.kg_path
+        if kp is None:
+            bump("skipped_no_kg_path")
+            continue
+        # 型の確定 (multi_hop ⇄ single_fact) は認定より前に済ませる。
+        # 認定表は確定後の型で引かないと、降格すべき項目を multi_hop の
+        # 行で不認定にして「対照群」と「降格」を取り違える。
+        if sync_kg_query_type_from_retrieval(qa):
+            bump("type_synced")
+        key = certify_key(qa)
+        rule = CERTIFY_BY_TYPE.get(key)
+        if rule is None:
+            ok, reason = False, _UNKNOWN_TYPE_REASON.format(key=key or "未設定")
+        else:
+            ok, reason = rule(qa)
+        kp.certified = ok
+        kp.certification_reason = reason
+        bump("certified" if ok else "uncertified")
+        bump(f"{'certified' if ok else 'uncertified'}:{key or '未設定'}")
+    return counts
+
+
+def format_certification_counts(counts: dict[str, int]) -> str:
+    """認定ゲートの内訳を1行に整える (型別内訳はキー名の昇順)。"""
+    detail = " ".join(
+        f"{k}={v}" for k, v in sorted(counts.items()) if ":" in k
+    )
+    return (f"認定 {counts.get('certified', 0)} / "
+            f"不認定 {counts.get('uncertified', 0)}"
+            + (f" ({detail})" if detail else ""))
 
 
 def rag_verify_batch(
@@ -634,6 +823,7 @@ def rag_verify_batch(
     n_failed = 0          # 検索が落ちて未検証のまま保留した件数
     n_judge_ng = 0        # 回答・judge が落ちて照合できなかった件数
     n_total = len(qas)
+    certification: dict[str, int] = {}   # 認定ゲートの内訳 (型別)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             for i, qa in enumerate(qas, 1):
@@ -661,6 +851,10 @@ def rag_verify_batch(
                 if update_labels:
                     apply_measured_retrieval_level(qa)
                     sync_kg_query_type_from_retrieval(qa)
+                    # 認定ゲート: 実測を持っているこの工程で合否を切る。
+                    # 不認定でも項目は書き出す (対照群として残す)。
+                    for k, v in certify_kg_items([qa]).items():
+                        certification[k] = certification.get(k, 0) + v
                 if not result.judge_ok:
                     n_judge_ng += 1
                 elif result.answer_match == "match":
@@ -693,6 +887,8 @@ def rag_verify_batch(
         f"[rag-verify] done: match={n_match} partial={n_partial} no_match={n_no_match} "
         f"(hit_doc={n_hit_doc}/{len(qas)} hit_chunk={n_hit_chunk}/{len(qas)}) → {out}"
     )
+    if certification.get("total"):
+        print(f"[rag-verify] 認定ゲート: {format_certification_counts(certification)}")
     if n_failed or n_judge_ng:
         print(f"[rag-verify] WARNING: 未検証 {n_failed} 件 / 照合不能 {n_judge_ng} 件 "
               f"— これらは no_match (KG候補) として数えないこと")

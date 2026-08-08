@@ -12,12 +12,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 from dotenv import load_dotenv
 
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from .chunker import (
     DISCOVERED_PATTERNS_PATH,
@@ -25,8 +26,16 @@ from .chunker import (
     discover_patterns,
     load_chunks,
 )
-from .filter import filter_batch
-from .generate import generate_batch
+from .filter import (
+    DEFAULT_ANSWERABILITY_MIN,
+    DEFAULT_GROUNDING_MIN,
+    DEFAULT_PROMPT as DEFAULT_JUDGE_PROMPT,
+    DEFAULT_RATIONALE_GROUNDED_MIN,
+    DEFAULT_UNIQUENESS_MAX,
+    filter_batch,
+)
+from . import generate as _generate_module
+from .generate import DEFAULT_SEEDS, generate_batch
 from .probe import probe_batch
 from .rag_verify import DEFAULT_TOP_K, rag_verify_batch
 
@@ -73,6 +82,38 @@ def _judge_default(fallback: str) -> str:
     return os.getenv("JUDGE_MODEL") or os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", fallback)
 
 
+# 生成側モデルの既定値はここだけに書く。以前は同じ VLLM_MODEL に対する既定名が
+# 2種類 (gpt-oss-120b / gemma-4-26B-A4B-it) で6箇所に散っており、VLLM_MODEL を
+# 外した実行や片方だけ --model を指定した実行で「既知性を測る対象」と「回答を
+# 作る対象」が別モデルになり、llm_knowledge の意味が静かにずれていた
+# (2026-08-08)。値は設計書の「完全オンプレ (生成・判定 Gemma :8000)」に合わせる。
+GENERATOR_MODEL_FALLBACK = "google/gemma-4-26B-A4B-it"
+
+
+def _generator_default() -> str:
+    """生成・probe・RAG 回答に使うモデルの既定値。
+
+    VLLM_MODEL (オンプレ推論サーバ) を最優先し、無ければ配備中のモデル名に落とす。
+    判定側 _judge_default と違い Azure 配備名へは落とさない — 生成は件数が多く、
+    設定漏れで黙ってクラウドへ出ると費用が跳ねるため (オンプレ完結・費用最小)。
+    """
+    return os.getenv("VLLM_MODEL") or GENERATOR_MODEL_FALLBACK
+
+
+# 台帳 (異文書アンカー対の許可リスト・文書名の別名) の既定パス。generate と
+# kg-generate で同じ既定を使うためにここへ1つだけ置く。恒久的な正本は
+# generate.py 側へ寄せる途中なので、定義が生えたらそちらを優先して引く
+# (監査 rank 30 は別担当)。
+DEFAULT_ANCHOR_PAIRS = Path(getattr(
+    _generate_module, "DEFAULT_ANCHOR_PAIRS",
+    str(Path(DEFAULT_SEEDS).parent / "anchor_pairs_manual_v1.jsonl"),
+))
+DEFAULT_DOC_ALIASES = Path(getattr(
+    _generate_module, "DEFAULT_DOC_ALIASES",
+    str(Path(DEFAULT_SEEDS).parent / "doc_aliases.json"),
+))
+
+
 def _provenance_default(fallback: str) -> str:
     """KG辺検証は生成モデルとの誤り相関を避けるため専用設定を優先する。
 
@@ -115,7 +156,7 @@ def chunk(
 def discover_patterns_cmd(
     chunks: Path = typer.Option(Path("data/chunks"), help="Chunks directory"),
     model: str = typer.Option(
-        lambda: os.getenv("VLLM_MODEL", "openai/gpt-oss-120b"),
+        _generator_default,
         help="LLM model to use for discovery",
     ),
     max_chars: int = typer.Option(12000, help="Max sample chars sent to LLM"),
@@ -154,16 +195,16 @@ def generate(
     out: Path = typer.Option(Path("data/raw"), help="Output dir for raw batches"),
     n: int = typer.Option(10, help="Number of QAs to generate"),
     model: str = typer.Option(
-        lambda: os.getenv("VLLM_MODEL", "openai/gpt-oss-120b"),
+        _generator_default,
         help="Generator model (vLLM / Azure / Claude)",
     ),
-    seeds: Path = typer.Option(Path("data/seeds/seeds.json")),
+    seeds: Path = typer.Option(Path(DEFAULT_SEEDS)),
     anchor_pairs: Path = typer.Option(
-        Path("data/seeds/anchor_pairs_manual_v1.jsonl"), "--anchor-pairs",
+        DEFAULT_ANCHOR_PAIRS, "--anchor-pairs",
         help="解決済みエッジ台帳 (異文書アンカー対の許可リスト)。無ければ規格番号・明示参照のみで成立",
     ),
     doc_aliases: Path = typer.Option(
-        Path("data/seeds/doc_aliases.json"), "--doc-aliases",
+        DEFAULT_DOC_ALIASES, "--doc-aliases",
         help="文書名の別名台帳 {doc_id: [名称,…]}。明示参照 (文書名の名指し) の判定に使う",
     ),
     prompt: Optional[Path] = typer.Option(
@@ -202,13 +243,287 @@ def generate(
     )
 
 
+def _max_pagerank_default() -> float:
+    """中間ノードのハブ判定の閾値は kg.DEFAULT_MAX_PAGERANK が正本。
+
+    命令側が同じ値を直値で持つと、kg 側の定数を直しても CLI 経由では常に
+    上書きされて無音の空振りになる (監査 rank 18)。ここは値を持たず、
+    素材列挙側の既定をそのまま引く。
+    """
+    from . import kg as kg_mod
+    return kg_mod.DEFAULT_MAX_PAGERANK
+
+
+def _require_ledger(path: Path, what: str) -> None:
+    """台帳が見つからないときに、空の規則のまま走り続けるのを止める。
+
+    load_cross_doc_policy は台帳が無くても例外を出さず空規則を返すので、
+    kg_decoy では「明示参照で本当に繋がっている対」がデコイ (棄権が正解) として
+    出荷され、kg_missing は 0 対を返して正常終了する — どちらもラベルの意味だけが
+    静かに反転する。台帳を要る型では見つからない時点で落とす (2026-08-08)。
+    """
+    if not path.exists():
+        typer.echo(f"[kg-generate] ERROR: {what} が見つかりません: {path}", err=True)
+        raise typer.Exit(1)
+
+
+class _KgMaterialCtx:
+    """素材列挙に要る道具一式。
+
+    原文・埋め込み・台帳は読み込みが重い (または台帳の存在を強制する) ので、
+    要求した型だけが払うよう遅延で読む。同じ道具を型をまたいで使い回すため、
+    --mix の繰り返しの外で1つ作り、KG セッションと目標件数だけ差し替える。
+    """
+
+    def __init__(
+        self, *, chunks_dir: Path, anchor_pairs: Path, doc_aliases: Path,
+        path_limit: int, min_extraction_count: int, max_pagerank: float,
+        max_per_intermediate: int, decoy_sim_floor: Optional[float],
+        decoy_position_gap: Optional[int], decoy_per_doc_pair: Optional[int],
+    ) -> None:
+        self.chunks_dir = chunks_dir
+        self.anchor_pairs = anchor_pairs
+        self.doc_aliases = doc_aliases
+        self.path_limit = path_limit
+        self.min_extraction_count = min_extraction_count
+        self.max_pagerank = max_pagerank
+        self.max_per_intermediate = max_per_intermediate
+        self.decoy_sim_floor = decoy_sim_floor
+        self.decoy_position_gap = decoy_position_gap
+        self.decoy_per_doc_pair = decoy_per_doc_pair
+        self.sess: Any = None
+        self.n_target: int = 0
+        self._chunks: Optional[list] = None
+        self._texts: Optional[dict[str, str]] = None
+        self._policy: Any = None
+        self._embeddings: Any = None
+
+    @property
+    def chunks(self) -> list:
+        if self._chunks is None:
+            self._chunks = load_chunks(self.chunks_dir)
+        return self._chunks
+
+    @property
+    def texts(self) -> dict[str, str]:
+        # 始点閉包チェックのため経路列挙の段階で原文が要る
+        if self._texts is None:
+            self._texts = {c.chunk_id: c.text for c in self.chunks}
+        return self._texts
+
+    @property
+    def policy(self):
+        if self._policy is None:
+            from .sampling import load_cross_doc_policy
+            _require_ledger(self.anchor_pairs, "解決済みエッジ台帳 (--anchor-pairs)")
+            _require_ledger(self.doc_aliases, "文書名の別名台帳 (--doc-aliases)")
+            self._policy = load_cross_doc_policy(self.anchor_pairs, self.doc_aliases)
+        return self._policy
+
+    @property
+    def embeddings(self):
+        if self._embeddings is None:
+            from .sampling import compute_embeddings
+            emb = compute_embeddings(self.chunks)
+            if emb is None:
+                typer.echo("[kg-generate] ERROR: 埋め込みが取れません", err=True)
+                raise typer.Exit(1)
+            self._embeddings = emb
+        return self._embeddings
+
+    @property
+    def node_map(self) -> dict:
+        from . import kg as kg_mod
+        return kg_mod.chunk_node_map(self.sess)
+
+
+# ---------------- kg-generate の型別表 ----------------
+# 型1つの規則 (素材列挙・生成関数・段2プロンプト・スキーマ上の型名) を1行にまとめる。
+# 2026-08-08 まではこれが「素材選び」と「生成器選び」の2本の if 連鎖に割れており、
+# どちらも裸の else = multi_hop で終わっていたため、型を足して片方の追記を忘れると
+# その型だけ黙って multi_hop の素材・multi_hop の生成器で作られていた。
+# 段2プロンプトは名前で引く — パスの正本は generate_kg の定数で、CLI に写しを作らない。
+
+@dataclass(frozen=True)
+class _KgTrack:
+    schema_type: str                       # スキーマ/検品テーブル上の型名
+    material_label: str                    # ログに出す素材の呼び名
+    material_unit: str                     # 素材の数え方 (本/個/対)
+    enumerate_materials: Callable[["_KgTrack", "_KgMaterialCtx"], list]
+    generate: Callable[["_KgTrack", list, "_KgMaterialCtx", dict], Path]
+    write_prompt_attr: Optional[str] = None    # generate_kg 側の定数名 (段2プロンプト)
+    query_type_override: Optional[str] = None  # 同素材で別型を作るときだけ指定
+    terminal_leak_free: bool = False           # 終端根拠の語彙断絶を要求するか
+    needs_policy: bool = False                 # 台帳が要る型 (無ければ落とす)
+
+
+def _materials_two_hop(track: _KgTrack, ctx: _KgMaterialCtx) -> list:
+    from . import kg as kg_mod
+    return list(kg_mod.iter_two_hop_paths(
+        ctx.sess,
+        min_extraction_count=ctx.min_extraction_count,
+        max_pagerank=ctx.max_pagerank,
+        max_per_intermediate=ctx.max_per_intermediate,
+        chunk_texts=ctx.texts,
+        # multi_hop だけ終端根拠の語彙断絶を要求する (2026-08-07)。
+        # traceability は系譜の提示が契約で、検索困難性は狙わない
+        require_leak_free_terminal=track.terminal_leak_free,
+        limit=ctx.path_limit,
+    ))
+
+
+def _materials_stars(track: _KgTrack, ctx: _KgMaterialCtx) -> list:
+    from . import kg as kg_mod
+    return list(kg_mod.iter_star_groups(
+        ctx.sess, chunk_texts=ctx.texts, limit=ctx.path_limit))
+
+
+def _materials_exclusions(track: _KgTrack, ctx: _KgMaterialCtx) -> list:
+    from . import kg as kg_mod
+    return list(kg_mod.iter_excludes_edges(
+        ctx.sess, chunk_texts=ctx.texts, limit=ctx.path_limit))
+
+
+def _materials_missing_refs(track: _KgTrack, ctx: _KgMaterialCtx) -> list:
+    from .generate_kg import find_missing_reference_pairs
+    return find_missing_reference_pairs(ctx.chunks, ctx.policy, ctx.node_map)
+
+
+def _materials_decoys(track: _KgTrack, ctx: _KgMaterialCtx) -> list:
+    """デコイ選別の3値は generate_kg の名前つき定数が正本。
+
+    --decoy-* を指定したときだけ素通しし、指定が無ければ定数の既定に委ねる
+    (CLI に写しを持つと、埋め込みモデルを差し替えて目盛りが変わったときに
+    どちらが効いているのか判らなくなる)。採用値は必ずログに出す。
+    """
+    from . import generate_kg
+    from .generate_kg import find_decoy_pairs
+
+    overrides: dict[str, Any] = {}
+    if ctx.decoy_sim_floor is not None:
+        overrides["sim_floor"] = ctx.decoy_sim_floor
+    if ctx.decoy_position_gap is not None:
+        overrides["min_position_gap"] = ctx.decoy_position_gap
+    if ctx.decoy_per_doc_pair is not None:
+        overrides["max_per_doc_pair"] = ctx.decoy_per_doc_pair
+
+    def _shown(key: str, const_name: str) -> str:
+        if key in overrides:
+            return f"{overrides[key]} (指定)"
+        return f"{getattr(generate_kg, const_name, '不明')} (generate_kg 既定)"
+
+    typer.echo(
+        "[kg-generate] デコイ選別: "
+        f"類似下限={_shown('sim_floor', 'DECOY_SIM_FLOOR')} "
+        f"位置差={_shown('min_position_gap', 'DECOY_MIN_POSITION_GAP')} "
+        f"文書対あたり={_shown('max_per_doc_pair', 'DECOY_MAX_PER_DOC_PAIR')}"
+    )
+    return find_decoy_pairs(
+        ctx.chunks, ctx.embeddings, ctx.policy, ctx.node_map,
+        top_n=max(ctx.n_target * 4, 20), **overrides,
+    )
+
+
+def _gen_kwargs(track: _KgTrack) -> dict[str, Any]:
+    """表の列を生成関数の引数へ翻訳する (段2プロンプトと型上書き)。"""
+    from . import generate_kg
+    kwargs: dict[str, Any] = {}
+    if track.write_prompt_attr:
+        kwargs["prompt_path"] = Path(getattr(generate_kg, track.write_prompt_attr))
+    if track.query_type_override:
+        kwargs["query_type_override"] = track.query_type_override
+    return kwargs
+
+
+def _gen_from_paths(track: _KgTrack, materials: list, ctx: _KgMaterialCtx, common: dict) -> Path:
+    from .generate_kg import generate_from_paths
+    return generate_from_paths(
+        materials, **common, terminal_leak_free=track.terminal_leak_free,
+        **_gen_kwargs(track),
+    )
+
+
+def _gen_from_stars(track: _KgTrack, materials: list, ctx: _KgMaterialCtx, common: dict) -> Path:
+    from .generate_kg import generate_from_stars
+    return generate_from_stars(materials, **common, **_gen_kwargs(track))
+
+
+def _gen_from_exclusions(track: _KgTrack, materials: list, ctx: _KgMaterialCtx, common: dict) -> Path:
+    from .generate_kg import generate_from_exclusions
+    return generate_from_exclusions(materials, **common, **_gen_kwargs(track))
+
+
+def _gen_from_references(track: _KgTrack, materials: list, ctx: _KgMaterialCtx, common: dict) -> Path:
+    from .generate_kg import generate_from_references
+    return generate_from_references(
+        materials, **common, policy=ctx.policy, **_gen_kwargs(track))
+
+
+def _gen_from_decoys(track: _KgTrack, materials: list, ctx: _KgMaterialCtx, common: dict) -> Path:
+    from .generate_kg import generate_from_decoys
+    return generate_from_decoys(materials, **common, **_gen_kwargs(track))
+
+
+# CLI 名 = スキーマ上の型名 (KGQueryType の値、または KGPathProvenance.source)。
+# 型名の語彙を CLI だけ別に持つのをやめた (negation ↔ negation_exhaustive の
+# ずれが実際に起きていた)。single_fact は multi_hop の降格先なので専用生成しない。
+KG_TRACKS: dict[str, _KgTrack] = {
+    "multi_hop": _KgTrack(
+        schema_type="multi_hop",
+        material_label="候補経路", material_unit="本",
+        enumerate_materials=_materials_two_hop, generate=_gen_from_paths,
+        terminal_leak_free=True,
+    ),
+    "traceability": _KgTrack(
+        schema_type="traceability",
+        material_label="候補経路", material_unit="本",
+        enumerate_materials=_materials_two_hop, generate=_gen_from_paths,
+        write_prompt_attr="WRITE_TRACE_PROMPT", query_type_override="traceability",
+    ),
+    "aggregation": _KgTrack(
+        schema_type="aggregation",
+        material_label="候補の星", material_unit="個",
+        enumerate_materials=_materials_stars, generate=_gen_from_stars,
+    ),
+    "negation_exhaustive": _KgTrack(
+        schema_type="negation_exhaustive",
+        material_label="候補の除外辺", material_unit="本",
+        enumerate_materials=_materials_exclusions, generate=_gen_from_exclusions,
+    ),
+    "kg_missing": _KgTrack(
+        schema_type="kg_missing",
+        material_label="KG に対応の無い明示参照", material_unit="対",
+        enumerate_materials=_materials_missing_refs, generate=_gen_from_references,
+        needs_policy=True,
+    ),
+    "kg_decoy": _KgTrack(
+        schema_type="kg_decoy",
+        material_label="デコイ候補 (類似だが無関係)", material_unit="対",
+        enumerate_materials=_materials_decoys, generate=_gen_from_decoys,
+        needs_policy=True,
+    ),
+}
+
+# 綴りを揃える前の旧 CLI 名。手順書やシェル履歴を壊さないために受け付ける。
+KG_TRACK_ALIASES: dict[str, str] = {
+    "negation": "negation_exhaustive",
+    "missing": "kg_missing",
+    "decoy": "kg_decoy",
+}
+
+
+def _resolve_kg_track(name: str) -> Optional[str]:
+    """CLI 名 (旧名を含む) を表のキーへ寄せる。表に無ければ None。"""
+    canonical = KG_TRACK_ALIASES.get(name, name)
+    return canonical if canonical in KG_TRACKS else None
+
+
 @app.command("kg-generate")
 def kg_generate(
     chunks: Path = typer.Option(Path("data/chunks_plant"), help="原文チャンク (KG と同じコーパス)"),
     out: Path = typer.Option(..., help="出力先ディレクトリ"),
     n: int = typer.Option(20, help="生成する QA 数の上限"),
-    model: str = typer.Option(
-        lambda: os.getenv("VLLM_MODEL", "google/gemma-4-26B-A4B-it"), help="生成モデル"),
+    model: str = typer.Option(_generator_default, help="生成モデル"),
     provenance_model: str = typer.Option(
         lambda: _provenance_default("gpt-4.1-mini"),
         "--provenance-model",
@@ -217,29 +532,40 @@ def kg_generate(
     min_extraction_count: int = typer.Option(
         2, help="各辺が何チャンクから抽出されていれば採用するか (下げると供給↑・品質↓)"),
     max_pagerank: float = typer.Option(
-        0.0005, help="中間ノードの pagerank 上限 (汎用ハブの除外)"),
+        _max_pagerank_default, show_default="kg.DEFAULT_MAX_PAGERANK",
+        help="中間ノードの pagerank 上限 (汎用ハブの除外)"),
     max_per_intermediate: int = typer.Option(
         2, help="同じ中間ノードを使う経路の上限 (中程度のハブによる重複を散らす)"),
     path_limit: int = typer.Option(500, help="KG から取り出す経路の候補数"),
     query_type: str = typer.Option(
         "multi_hop", "--query-type",
-        help="生成する型: multi_hop (2辺連鎖) / aggregation (星型の一覧・集約) / "
-             "traceability (連鎖の根拠系譜) / negation (EXCLUDES 辺の適用除外)"),
+        help="生成する型: " + " / ".join(KG_TRACKS)),
     kg_mix: Optional[str] = typer.Option(
         None, "--mix",
         help="型の配分をまとめて生成する。例: 'multi_hop=10,aggregation=8,"
-             "traceability=5,negation=3'。指定時は --query-type/--n を無視"),
+             "traceability=5,negation_exhaustive=3'。指定時は --query-type/--n を無視"),
+    anchor_pairs: Path = typer.Option(
+        DEFAULT_ANCHOR_PAIRS, "--anchor-pairs",
+        help="解決済みエッジ台帳 (異文書アンカー対の許可リスト)。kg_missing / kg_decoy で必須"),
+    doc_aliases: Path = typer.Option(
+        DEFAULT_DOC_ALIASES, "--doc-aliases",
+        help="文書名の別名台帳 {doc_id: [名称,…]}。kg_missing / kg_decoy で必須"),
+    decoy_sim_floor: Optional[float] = typer.Option(
+        None, "--decoy-sim-floor",
+        help="kg_decoy: 候補にする余弦類似の下限 (既定 generate_kg.DECOY_SIM_FLOOR)"),
+    decoy_position_gap: Optional[int] = typer.Option(
+        None, "--decoy-position-gap",
+        help="kg_decoy: 同一文書内で候補に残す最小の位置差 "
+             "(既定 generate_kg.DECOY_MIN_POSITION_GAP)"),
+    decoy_per_doc_pair: Optional[int] = typer.Option(
+        None, "--decoy-per-doc-pair",
+        help="kg_decoy: 同じ文書対から採る上限件数 "
+             "(既定 generate_kg.DECOY_MAX_PER_DOC_PAIR)"),
 ) -> None:
     """KG の経路・星・除外辺を原文検証し、通過した素材から QA を生成する。
 
     素材列挙 → 段0 両端含意 → 段1 合成判定 → 段2 作問 → 段3 機械検品 の順。
     """
-    from .generate_kg import (
-        WRITE_TRACE_PROMPT,
-        generate_from_exclusions,
-        generate_from_paths,
-        generate_from_stars,
-    )
     from . import kg as kg_mod
 
     if provenance_model == model:
@@ -249,99 +575,62 @@ def kg_generate(
             err=True,
         )
 
-    _ALLOWED = ("multi_hop", "aggregation", "traceability", "negation", "missing", "decoy")
+    known = " / ".join(KG_TRACKS)
     plan: list[tuple[str, int]] = []
     if kg_mix:
         for entry in kg_mix.split(","):
             entry = entry.strip()
             if not entry:
                 continue
-            qt, _, count = entry.partition("=")
-            qt = qt.strip()
-            if qt not in _ALLOWED or not count.strip().isdigit():
+            name, _, count = entry.partition("=")
+            qt = _resolve_kg_track(name.strip())
+            if qt is None or not count.strip().isdigit():
                 typer.echo(f"[kg-generate] --mix の項目が不正: {entry!r} "
-                           f"(型={_ALLOWED}, 'type=N' 形式)", err=True)
+                           f"(型={known}, 'type=N' 形式)", err=True)
                 raise typer.Exit(1)
             plan.append((qt, int(count)))
     else:
-        if query_type not in _ALLOWED:
-            typer.echo(f"[kg-generate] 未対応の --query-type: {query_type}", err=True)
+        qt = _resolve_kg_track(query_type)
+        if qt is None:
+            typer.echo(f"[kg-generate] 未対応の --query-type: {query_type} "
+                       f"(型={known})", err=True)
             raise typer.Exit(1)
-        plan = [(query_type, n)]
+        plan = [(qt, n)]
 
-    # 始点閉包チェックのため原文を先に読む (経路列挙の段階で必要)
-    texts = {c.chunk_id: c.text for c in load_chunks(chunks)}
+    ctx = _KgMaterialCtx(
+        chunks_dir=chunks, anchor_pairs=anchor_pairs, doc_aliases=doc_aliases,
+        path_limit=path_limit, min_extraction_count=min_extraction_count,
+        max_pagerank=max_pagerank, max_per_intermediate=max_per_intermediate,
+        decoy_sim_floor=decoy_sim_floor, decoy_position_gap=decoy_position_gap,
+        decoy_per_doc_pair=decoy_per_doc_pair,
+    )
+    # 台帳の不在は素材列挙まで潜らせず、走り出す前に落とす
+    for qt, _n in plan:
+        if KG_TRACKS[qt].needs_policy:
+            _require_ledger(anchor_pairs, "解決済みエッジ台帳 (--anchor-pairs)")
+            _require_ledger(doc_aliases, "文書名の別名台帳 (--doc-aliases)")
 
     for qt, n_target in plan:
+        track = KG_TRACKS[qt]
+        ctx.n_target = n_target
         typer.echo(f"[kg-generate] === {qt} ×{n_target} ===")
         with kg_mod.session() as sess:
+            ctx.sess = sess
             snapshot = kg_mod.snapshot_id(sess)
             typer.echo(f"[kg-generate] KG 版: {snapshot}")
-            if qt == "aggregation":
-                materials = list(kg_mod.iter_star_groups(
-                    sess, chunk_texts=texts, limit=path_limit))
-                typer.echo(f"[kg-generate] 候補の星: {len(materials)} 個")
-            elif qt == "negation":
-                materials = list(kg_mod.iter_excludes_edges(
-                    sess, chunk_texts=texts, limit=path_limit))
-                typer.echo(f"[kg-generate] 候補の除外辺: {len(materials)} 本")
-            elif qt == "decoy":
-                from .generate_kg import find_decoy_pairs
-                from .sampling import compute_embeddings, load_cross_doc_policy
-                policy = load_cross_doc_policy(
-                    Path("data/seeds/anchor_pairs_manual_v1.jsonl"),
-                    Path("data/seeds/doc_aliases.json"))
-                node_map = kg_mod.chunk_node_map(sess)
-                all_chunks = load_chunks(chunks)
-                emb = compute_embeddings(all_chunks)
-                if emb is None:
-                    typer.echo("[kg-generate] 埋め込みが取れません", err=True)
-                    raise typer.Exit(1)
-                materials = find_decoy_pairs(all_chunks, emb, policy, node_map,
-                                             top_n=max(n_target * 4, 20))
-                typer.echo(f"[kg-generate] デコイ候補 (類似だが無関係): {len(materials)} 対")
-            elif qt == "missing":
-                from .generate_kg import find_missing_reference_pairs
-                from .sampling import load_cross_doc_policy
-                policy = load_cross_doc_policy(
-                    Path("data/seeds/anchor_pairs_manual_v1.jsonl"),
-                    Path("data/seeds/doc_aliases.json"))
-                node_map = kg_mod.chunk_node_map(sess)
-                all_chunks = load_chunks(chunks)
-                materials = find_missing_reference_pairs(all_chunks, policy, node_map)
-                typer.echo(f"[kg-generate] KG に対応の無い明示参照: {len(materials)} 対")
-            else:   # multi_hop / traceability は同じ2辺素材
-                # multi_hop だけ終端根拠の語彙断絶を要求する (2026-08-07)。
-                # traceability は系譜の提示が契約で、検索困難性は狙わない
-                materials = list(kg_mod.iter_two_hop_paths(
-                    sess,
-                    min_extraction_count=min_extraction_count,
-                    max_pagerank=max_pagerank,
-                    max_per_intermediate=max_per_intermediate,
-                    chunk_texts=texts,
-                    require_leak_free_terminal=(qt == "multi_hop"),
-                    limit=path_limit,
-                ))
-                typer.echo(f"[kg-generate] 候補経路: {len(materials)} 本")
+            materials = track.enumerate_materials(track, ctx)
+            typer.echo(f"[kg-generate] {track.material_label}: "
+                       f"{len(materials)} {track.material_unit}")
+        if not materials:
+            # 素材 0 は例外にならず「空ファイルを書いて正常終了」になるので、
+            # 選別の目盛りが合っていない可能性をここで言う (2026-08-08)
+            typer.echo(f"[kg-generate] WARNING: {qt} の素材が 0 {track.material_unit} です。"
+                       "選別の閾値かコーパスを確認してください", err=True)
+            continue
         common = dict(chunks_dir=chunks, out_dir=out, model=model,
                       provenance_model=provenance_model,
                       kg_snapshot=snapshot, max_items=n_target)
-        if qt == "aggregation":
-            generate_from_stars(materials, **common)
-        elif qt == "negation":
-            generate_from_exclusions(materials, **common)
-        elif qt == "missing":
-            from .generate_kg import generate_from_references
-            generate_from_references(materials, **common, policy=policy)
-        elif qt == "decoy":
-            from .generate_kg import generate_from_decoys
-            generate_from_decoys(materials, **common)
-        elif qt == "traceability":
-            generate_from_paths(materials, **common,
-                                prompt_path=Path(WRITE_TRACE_PROMPT),
-                                query_type_override="traceability")
-        else:
-            generate_from_paths(materials, **common, terminal_leak_free=True)
+        track.generate(track, materials, ctx, common)
 
 
 @app.command()
@@ -351,7 +640,7 @@ def pipeline(
     n: int = typer.Option(25, help="生成する QA 数"),
     track: str = typer.Option("kg_poc", help="'general' or 'kg_poc'"),
     model: str = typer.Option(
-        lambda: os.getenv("VLLM_MODEL", "google/gemma-4-26B-A4B-it"),
+        _generator_default,
         help="生成・probe・RAG 回答モデル",
     ),
     judge_model: str = typer.Option(
@@ -441,14 +730,17 @@ def filter_cmd(
         lambda: _judge_default("gpt-4.1-mini"),
         help="Judge model (Azure deployment name, vLLM model, or Claude id)",
     ),
-    prompt: Path = typer.Option(Path("prompts/judge.md")),
-    answerability_min: float = typer.Option(4.0),
-    grounding_min: float = typer.Option(4.0),
-    uniqueness_max: float = typer.Option(0.92),
+    prompt: Path = typer.Option(Path(DEFAULT_JUDGE_PROMPT)),
+    # 合格線の正本は filter.py の DEFAULT_*。命令側で直値を再宣言すると、
+    # filter の既定を動かしても CLI 経由だけ旧値のまま走り、同じデータに
+    # 2つの合格線ができる (pipeline は filter 側の既定を使う) — 2026-08-08
+    answerability_min: float = typer.Option(DEFAULT_ANSWERABILITY_MIN),
+    grounding_min: float = typer.Option(DEFAULT_GROUNDING_MIN),
+    uniqueness_max: float = typer.Option(DEFAULT_UNIQUENESS_MAX),
     skip_uniqueness: bool = typer.Option(False, help="Skip embedding-based dedup"),
     skip_leakage: bool = typer.Option(False, help="Don't reject QAs with leakage=fail (judge is conservative)"),
     rationale_grounded_min: float = typer.Option(
-        0.5,
+        DEFAULT_RATIONALE_GROUNDED_MIN,
         help="Min fraction of rationale entries verifiable as chunk substrings. "
              "0.5 = 半数以上が逐語必須 (既定)。1.0 = 全件逐語必須。0.0 = 無効化。",
     ),
@@ -504,7 +796,7 @@ def probe(
     in_path: Path = typer.Option(..., "--in", help="JSONL of QAs to probe"),
     out_path: Optional[Path] = typer.Option(None, "--out", help="Output JSONL (default: overwrite --in)"),
     probe_model: str = typer.Option(
-        lambda: os.getenv("VLLM_MODEL", "openai/gpt-oss-120b"),
+        _generator_default,
         help="Base LLM to probe (should be the model used in deployment)",
     ),
     judge_model: str = typer.Option(
@@ -557,7 +849,7 @@ def rag_verify_cmd(
     chunks: Path = typer.Option(Path("data/chunks"), help="Chunks dir (検索対象)"),
     top_k: int = typer.Option(DEFAULT_TOP_K, help="検索結果の上位件数"),
     rag_model: str = typer.Option(
-        lambda: os.getenv("VLLM_MODEL", "google/gemma-4-26B-A4B-it"),
+        _generator_default,
         help="検索結果を context に回答するモデル (vector RAG 本番想定モデル)",
     ),
     judge_model: str = typer.Option(

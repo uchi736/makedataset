@@ -19,9 +19,13 @@ from rageval.schema import (
 )
 from rageval.webapi.service import (
     ServiceError,
+    data_root_for_reviewed_dir,
+    legacy_review_mirror_path,
+    list_sources,
     load_items,
     resolve_evidence,
     resolve_paths,
+    review_mirror_path,
     save_review,
 )
 
@@ -302,3 +306,134 @@ def test_resolve_paths_rejects_sibling_with_shared_prefix(tmp_path: Path):
     (sibling / "x.jsonl").write_text("{}\n", encoding="utf-8")
     with pytest.raises(ServiceError):
         resolve_paths(root, "../data_backup/x.jsonl")
+
+
+# ---------------- 保存先の決定 (rank 3: 人手の成果を失わない) ----------------
+
+def test_review_mirror_path_nests_by_dataset_and_never_re_nests(data_root: Path):
+    """保存先はデータセットごとに掘り、reviewed/ 配下のファイルは掘り直さない。
+
+    再入の判定を str(rel_dir).startswith("reviewed/") でやっていたため、区切りが
+    バックスラッシュになる Windows では reviewed/raw/x.jsonl を開いたときに
+    reviewed/reviewed/raw/x.jsonl へ書き出していた (=次に読むのは元の場所なので
+    その判定が消える)。パス要素で判定する。
+    """
+    src = data_root / "raw" / "batch_test.jsonl"
+    assert review_mirror_path(data_root, src) == data_root / "reviewed" / "raw" / "batch_test.jsonl"
+
+    already = data_root / "reviewed" / "raw" / "batch_test.jsonl"
+    already.parent.mkdir(parents=True)
+    already.write_text("", encoding="utf-8")
+    assert review_mirror_path(data_root, already) == already
+
+    # 旧平置きは読み込みの土台としてだけ返る
+    assert legacy_review_mirror_path(data_root, src) == data_root / "reviewed" / "batch_test.jsonl"
+
+    # 保存先ディレクトリからデータ置き場を逆算できる (Streamlit 版の --out 用)
+    assert data_root_for_reviewed_dir(Path("data/reviewed")) == Path("data")
+
+
+def test_save_review_continues_from_legacy_flat_mirror(data_root: Path):
+    """平たい旧配置のレビュー結果を土台にして、書き出しは入れ子へ移す。
+
+    平たい配置に既存の判定が残っている状態で「入れ子へ移行」だけすると、過去の
+    人手判定が丸ごと未判定に戻る。読み込みのみ後方互換とはそういう意味。
+    """
+    accepted = _make_qa("qa_general")
+    accepted.review_status = "accepted"
+    accepted.reviewed_by = "旧レイアウトの人"
+    legacy = data_root / "reviewed" / "batch_test.jsonl"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        accepted.model_dump_json() + "\n"
+        + _make_qa("qa_kg", kg=True).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    save_review(data_root, "raw", "batch_test.jsonl", "qa_kg",
+                status="rejected", reviewer="tester")
+
+    nested = data_root / "reviewed" / "raw" / "batch_test.jsonl"
+    assert nested.exists()
+    status = {
+        json.loads(ln)["qa_id"]: json.loads(ln)["review_status"]
+        for ln in nested.read_text(encoding="utf-8").splitlines()
+    }
+    assert status == {"qa_general": "accepted", "qa_kg": "rejected"}
+
+    # 読み直しでも入れ子が優先される
+    reloaded = load_items(data_root, "raw", "all")
+    by_id = {it["qa_id"]: it for it in reloaded["items"]}
+    assert by_id["qa_general"]["review_status"] == "accepted"
+    assert by_id["qa_kg"]["review_status"] == "rejected"
+
+
+def test_list_sources_shows_nested_reviewed_datasets(data_root: Path):
+    """入れ子になったレビュー結果が候補一覧から消えないこと。"""
+    save_review(data_root, "raw", "batch_test.jsonl", "qa_general",
+                status="accepted", reviewer="tester")
+    names = [d["name"] for d in list_sources(data_root)["datasets"]]
+    assert "raw" in names
+    assert "reviewed/raw" in names
+
+
+# ---------------- ラベル・目標値の一本化 (rank 36/38/39) ----------------
+
+def test_labels_are_derived_from_the_literals():
+    """列挙の並びを手書きに戻したら落ちる。値が増えたら表示名も足させる。"""
+    from typing import get_args
+
+    from rageval.aspects import CategoryName
+    from rageval.schema import (
+        DifficultyLevel,
+        DifficultyMatch,
+        EvidenceStrictness,
+        LeakageVerdict,
+        OutputType,
+        RAGAnswerMatch,
+        ReviewStatus,
+    )
+    from rageval.webapi import labels
+
+    pairs = [
+        (CategoryName, labels.CATEGORY_ORDER, labels.CATEGORY_LABELS),
+        (DifficultyLevel, labels.DIFF_ORDER, labels.DIFFICULTY_LABELS),
+        (LeakageVerdict, labels.ALL_LEAKAGE, labels.LEAKAGE_LABELS),
+        (DifficultyMatch, labels.ALL_DIFFICULTY_MATCH, labels.DIFFICULTY_MATCH_LABELS),
+        (ReviewStatus, labels.ALL_REVIEW_STATUS, labels.REVIEW_STATUS_LABELS),
+        (RAGAnswerMatch, labels.ALL_RAG_ANSWER_MATCH, labels.RAG_ANSWER_MATCH_LABELS),
+        (OutputType, labels.ALL_OUTPUT_TYPE, labels.OUTPUT_TYPE_LABELS),
+        (EvidenceStrictness, labels.ALL_EVIDENCE_STRICTNESS, labels.EVIDENCE_LABELS),
+    ]
+    for literal, order, label_map in pairs:
+        assert tuple(get_args(literal)) == tuple(order)
+        assert set(order) == set(label_map)
+
+
+def test_diag_labels_cover_every_schema_flag():
+    """診断3軸の項目を schema に足したとき、画面が黙って捨てないこと。"""
+    from rageval.webapi import labels
+
+    for axis, model in labels.DIAG_MODELS.items():
+        flags = {
+            name for name, field in model.model_fields.items()
+            if field.annotation is bool
+        }
+        assert set(labels.DIAG_LABELS[axis]) == flags
+        # 表示名の付け忘れ (英語のまま出ている項目) もここで気付ける
+        assert all(v != k for k, v in labels.DIAG_LABELS[axis].items())
+
+
+def test_targets_follow_the_filter_defaults():
+    """画面の合格線は、実際に QA を落とす filter の既定と同じであること。"""
+    from rageval.filter import (
+        DEFAULT_ANSWERABILITY_MIN,
+        DEFAULT_GROUNDING_MIN,
+        DEFAULT_UNIQUENESS_MAX,
+    )
+    from rageval.webapi.labels import build_labels
+
+    targets = build_labels()["targets"]
+    assert targets["answerability_pass"] == DEFAULT_ANSWERABILITY_MIN
+    assert targets["grounding_pass"] == DEFAULT_GROUNDING_MIN
+    assert targets["uniqueness_pass"] == 1.0 - DEFAULT_UNIQUENESS_MAX

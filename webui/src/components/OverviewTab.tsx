@@ -6,6 +6,19 @@ import type { DistRow } from "./charts";
 
 interface StatusLine { kind: "ok" | "warn" | "info"; msg: string }
 
+// 目標値は配信 (labels.targets) が正本。説明文・帯の色・帯の満杯基準を同じ値から
+// 組み立てる — 直値で書くと、目標を動かしたとき上段の文言だけが新しい目標を語り、
+// 真下の帯は旧区間で色を決める (緑の帯の上に「過多」と書かれる) 自己矛盾が起きる。
+function fmtPct(v: number): string {
+  return `${Math.round(v * 1000) / 10}%`;
+}
+
+function targetText(labels: Labels, targets: Record<string, number>): string {
+  return labels.diff_order
+    .map((d) => `${labels.difficulty_labels[d] ?? d} ${fmtPct(targets[d] ?? 0)}`)
+    .join(" / ");
+}
+
 function buildStatusLines(items: QAItem[], labels: Labels): StatusLine[] {
   const n = items.length;
   const out: StatusLine[] = [];
@@ -22,11 +35,11 @@ function buildStatusLines(items: QAItem[], labels: Labels): StatusLine[] {
     const ar = abstN / n;
     const [loA, hiA] = labels.targets.abstention;
     if (loA <= ar && ar <= hiA) {
-      out.push({ kind: "ok", msg: `棄権 (Abstention) ${abstN}件 (${pct(ar)}) — 目標 ${pct(loA)}-${pct(hiA)} 内` });
+      out.push({ kind: "ok", msg: `棄権 (Abstention) ${abstN}件 (${pct(ar)}) — 目標 ${fmtPct(loA)}-${fmtPct(hiA)} 内` });
     } else {
       out.push({
         kind: "warn",
-        msg: `棄権 (Abstention) ${abstN}件 (${pct(ar)}) — 目標 ${pct(loA)}-${pct(hiA)} に対し${ar < loA ? "不足" : "過多"}`,
+        msg: `棄権 (Abstention) ${abstN}件 (${pct(ar)}) — 目標 ${fmtPct(loA)}-${fmtPct(hiA)} に対し${ar < loA ? "不足" : "過多"}`,
       });
     }
 
@@ -50,13 +63,16 @@ function buildStatusLines(items: QAItem[], labels: Labels): StatusLine[] {
     for (const it of generalItems) for (const a of it.aspect) aspectCounts.set(a, (aspectCounts.get(a) ?? 0) + 1);
     const min = labels.targets.aspect_min;
     const uncovered = labels.all_aspects.filter((a) => (aspectCounts.get(a) ?? 0) < min);
+    // 観点の数も配信 (all_aspects) から数える。観点表を増減したときに
+    // 文言だけ 25 のまま残ると、未達の分母が画面から読めなくなる。
+    const nAspects = labels.all_aspects.length;
     if (uncovered.length) {
       out.push({
         kind: "warn",
-        msg: `25観点中 ${uncovered.length}個が目標 (各${min}問) に未達: ${uncovered.slice(0, 5).map((a) => labels.aspect_labels[a] ?? a).join(", ")}${uncovered.length > 5 ? " …" : ""}`,
+        msg: `${nAspects}観点中 ${uncovered.length}個が目標 (各${min}問) に未達: ${uncovered.slice(0, 5).map((a) => labels.aspect_labels[a] ?? a).join(", ")}${uncovered.length > 5 ? " …" : ""}`,
       });
     } else {
-      out.push({ kind: "ok", msg: `25観点すべて目標 (各${min}問) を達成` });
+      out.push({ kind: "ok", msg: `${nAspects}観点すべて目標 (各${min}問) を達成` });
     }
   }
 
@@ -102,6 +118,7 @@ export default function OverviewTab({ items, labels }: { items: QAItem[]; labels
 
   const abstN = generalItems.filter((it) => (it.category[0] ?? "") === "Abstention").length;
   const abstR = n ? abstN / n : 0;
+  const [abstLo, abstHi] = labels.targets.abstention;
 
   const statusLines = buildStatusLines(items, labels);
 
@@ -142,13 +159,13 @@ export default function OverviewTab({ items, labels }: { items: QAItem[]; labels
         )}
         <div className="card">
           <h3>検索難易度</h3>
-          <p className="caption">目標: 易 37.5% / 中 37.5% / 難 25% (赤い刻みが目標)。</p>
+          <p className="caption">目標: {targetText(labels, labels.targets.search_diff)} (赤い刻みが目標)。</p>
           <Legend keys={labels.diff_order.map((d) => ({ label: labels.difficulty_labels[d] ?? d, color: DIFFICULTY_COLORS[d] }))} />
           <DistBar rows={diffRows("retrieval_level", labels.targets.search_diff)} total={n} />
         </div>
         <div className="card">
           <h3>回答難易度</h3>
-          <p className="caption">目標: 易 17.5% / 中 62.5% / 難 20% (赤い刻みが目標)。</p>
+          <p className="caption">目標: {targetText(labels, labels.targets.answer_diff)} (赤い刻みが目標)。</p>
           <Legend keys={labels.diff_order.map((d) => ({ label: labels.difficulty_labels[d] ?? d, color: DIFFICULTY_COLORS[d] }))} />
           <DistBar rows={diffRows("answer_level", labels.targets.answer_diff)} total={n} />
         </div>
@@ -157,13 +174,15 @@ export default function OverviewTab({ items, labels }: { items: QAItem[]; labels
       {generalItems.length > 0 && (
         <div className="card">
           <h3>棄権 (Abstention) 比率</h3>
-          <p className="caption">目標: 10%〜15%。答えられない問いを一定割合入れて、無理に答えない能力を測る。</p>
+          <p className="caption">
+            目標: {fmtPct(abstLo)}〜{fmtPct(abstHi)}。答えられない問いを一定割合入れて、無理に答えない能力を測る。
+          </p>
           <div className="progress-track" style={{ maxWidth: 480 }}>
             <div
               className="progress-fill"
               style={{
-                width: pct(Math.min(abstR / 0.15, 1)),
-                background: abstR >= 0.10 && abstR <= 0.15 ? "var(--status-good)" : "var(--status-warning)",
+                width: pct(abstHi > 0 ? Math.min(abstR / abstHi, 1) : 0),
+                background: abstR >= abstLo && abstR <= abstHi ? "var(--status-good)" : "var(--status-warning)",
               }}
             />
           </div>

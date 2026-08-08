@@ -103,6 +103,13 @@ def normalize_numbers(s: str) -> str:
     return s
 
 
+# 原文の表記をそのまま拾う側 (chunker の参照抽出) が使う数字の文字クラス。
+# 抽出した表記は原文照合にそのまま使うため normalize_numbers を通せない。
+# 半角・全角の算用数字と漢数字を1つの定義で持ち、コーパスごとの表記の違い
+# (chunks_plant の条番号は漢数字 4200 対 算用 1052) を正規表現側で吸収する。
+NUMERAL_CHARS = "0-9０-９〇一二三四五六七八九十百千"
+
+
 # ---------------- 根拠構造の判別 (chained / parallel) ----------------
 # leave-one-out は「全根拠が必要」を証明するが「連鎖」は証明しない。
 # 独立2問を「また」で束ねた問いも、両方の根拠が要るので LOO を通ってしまう。
@@ -111,10 +118,19 @@ def normalize_numbers(s: str) -> str:
 #   parallel : 固有値が複数の根拠単位に分散 = 実体は束ね問い
 # を機械判別する。
 
-_SALIENT_TOKEN_RES = [
-    re.compile(r"第\d+条(?:の\d+)?"),
-    re.compile(r"様式第?\d+(?:号)?"),
-    re.compile(r"別表第?\d+"),
+# 文書ローカルな番号トークン (第N条・様式第N・別表第N) の唯一の定義。
+# **normalize_numbers を通した表記に当てる**前提なので算用数字だけで書く。
+# 2026-08-08: filter が独自の正規化 (NFKC + 空白除去のみ) と独自の番号正規表現で
+# 同じことをしており、漢数字の条番号を1件も拾えないまま誤結合検出が無反応に
+# なっていた。両者がずれないよう定義をここに1つだけ置く。
+LOCAL_NUMBER_TOKEN_PATTERNS = [
+    r"第\d+条(?:の\d+)?",
+    r"様式第?\d+(?:号)?",
+    r"別表第?\d+",
+]
+LOCAL_NUMBER_TOKEN_RE = re.compile("|".join(f"(?:{p})" for p in LOCAL_NUMBER_TOKEN_PATTERNS))
+
+_SALIENT_TOKEN_RES = [re.compile(p) for p in LOCAL_NUMBER_TOKEN_PATTERNS] + [
     # 数値+単位。単位を伴わない裸の数値は誤検出が多いので拾わない
     re.compile(r"\d+(?:\.\d+)?(?:年|か月|箇月|日|時間|分|回|件|人|号|倍|%|"
                r"mm|cm|m|MPa|kPa|Pa|kW|MW|kg|t|L|V|A|℃|度)"),

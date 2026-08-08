@@ -5,7 +5,9 @@ Usage:
 
 The `--in` argument accepts a concrete path or a glob (in which case the latest
 match is used). Accepted/edited/rejected items are written to a mirror file in
-`data/reviewed/`.
+`data/reviewed/<データセット>/<元ファイル名>` — 保存先の決定は
+`webapi.service.review_mirror_path` 1本に集約してある (Web 版と同じ場所を読み書き
+する)。平たい旧配置 `data/reviewed/<元ファイル名>` は読み込みのみ後方互換。
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import streamlit as st
 
@@ -26,43 +28,23 @@ from rageval.aspects import ASPECT_DESCRIPTIONS, ASPECT_LABELS
 from rageval.chunker import load_chunks
 from rageval.schema import Chunk, QAItem
 
-
-# Human-readable labels for diagnostic flags (true value only is shown)
-_DIAG_LABELS: dict[str, dict[str, str]] = {
-    "reasoning_complexity": {
-        "multi_step":   "多段推論",
-        "quantitative": "数値計算",
-        "negation":     "否定推論",
-        "cause_effect": "因果推論",
-        "comparison":   "比較",
-        "temporal":     "時系列",
-    },
-    "retrieval_difficulty": {
-        "multi_doc":               "複数文書",
-        "multi_chunk":             "複数チャンク",
-        "low_locality":            "局所性低",
-        "remote_reference":        "遠隔参照",
-        "doc_volume_large":        "大量文書",
-        "chunk_size_large":        "大チャンク",
-        "abstraction_discrepancy": "抽象度の乖離",
-        "vocabulary_mismatch":     "語彙ミスマッチ",
-    },
-    "source_structure": {
-        "tables_charts":     "表・図",
-        "complex_layout":    "複雑レイアウト",
-        "specific_area_ref": "領域参照",
-        "logical_nesting":   "階層構造",
-        "large_enumeration": "大量列挙",
-        "redundancy":        "冗長性",
-    },
-}
-_OUTPUT_TYPE_LABEL = {"summary": "要約", "trans": "翻訳", "list": "列挙", "none": "なし"}
-_EVIDENCE_LABEL = {
-    "no-evidence": "根拠なし",
-    "hier-ref":    "単一根拠",
-    "coord-ref":   "並列根拠",
-    "multi-ref":   "複数根拠厳密",
-}
+# 表示ラベル・合格線・チェックリストの正本は webapi/labels.py。同じ表を
+# review_app / stats_app / labels.py に写していたため、Streamlit と Web で
+# 指摘できる観点が食い違っていた (監査 rank 37/38)。ここでは引くだけにする。
+from rageval.webapi.labels import (
+    ANSWERABILITY_PASS,
+    CATEGORY_LABELS as _CATEGORY_LABELS,
+    DIAG_LABELS as _DIAG_LABELS,
+    EVIDENCE_LABELS as _EVIDENCE_LABEL,
+    GROUNDING_PASS,
+    OUTPUT_TYPE_LABELS as _OUTPUT_TYPE_LABEL,
+    checklist_for,
+)
+from rageval.webapi.service import (
+    data_root_for_reviewed_dir,
+    legacy_review_mirror_path,
+    review_mirror_path,
+)
 
 
 def _check_pass(value, threshold: float) -> str:
@@ -74,9 +56,11 @@ def _check_pass(value, threshold: float) -> str:
 def _render_checkpoints(qa: QAItem) -> None:
     """5項目の品質チェックリスト + 人手で見るべきポイント。"""
     fs = qa.filter_scores
+    # 合格線は filter が実際に落とす値と同一 (labels 経由で filter.DEFAULT_* を引く)。
+    # 画面が「合格」と描くのに filter は落とす、という食い違いを作らないため。
     rows = [
-        ("答えられるか (answerability)", fs.answerability, 4.0, "根拠だけで一意に答えられるか"),
-        ("根拠妥当性 (grounding)",     fs.grounding,     4.0, "根拠が回答を支えているか"),
+        ("答えられるか (answerability)", fs.answerability, ANSWERABILITY_PASS, "根拠だけで一意に答えられるか"),
+        ("根拠妥当性 (grounding)",     fs.grounding,     GROUNDING_PASS, "根拠が回答を支えているか"),
     ]
     for label, val, thr, hint in rows:
         col1, col2 = st.columns([1, 3])
@@ -111,15 +95,6 @@ def _render_checkpoints(qa: QAItem) -> None:
     )
 
 
-_CATEGORY_LABELS = {
-    "Integration": "統合",
-    "Reasoning":   "推論",
-    "Logic":       "論理",
-    "Figure":      "図表",
-    "Abstention":  "棄権",
-}
-
-
 def _summarize_diagnostic_tags(qa: QAItem) -> str:
     """Compact one-line summary of true diagnostic flags, returns markdown."""
     lines: list[str] = []
@@ -144,6 +119,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="input", required=True)
     parser.add_argument("--out", dest="output", default="data/reviewed")
+    parser.add_argument(
+        "--data-root", dest="data_root", default=None,
+        help="データ置き場 (省略時は --out の親から逆算。保存先を "
+             "<保存先>/<データセット>/<元ファイル名> に掘るために使う)",
+    )
     parser.add_argument("--chunks", dest="chunks_dir", default="data/chunks")
     parser.add_argument("--reviewer", default="unknown")
     parser.add_argument(
@@ -215,6 +195,26 @@ def _resolve_anchor_chunks(qa: QAItem, chunks_dir: str) -> list[Chunk]:
             out.append(best)
             seen.add(best.chunk_id)
     return out
+
+
+def _resolve_review_paths(
+    input_path: Path, out_dir: Path, data_root: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """(レビュー結果の保存先, 旧平置きの保存先) を返す。
+
+    決めているのは webapi.service.review_mirror_path 1本。以前はここが
+    「保存先/入力ファイル名」の平たい規約で、Web 側だけ入れ子規約へ移っていた
+    ため、data/raw_x/batch.jsonl と data/filtered_x/batch.jsonl のような同名
+    ファイルが保存先を奪い合い、片方を保存した瞬間にもう片方の人手判定が
+    無警告で消えていた (監査 rank 3)。
+    旧平置きは**読み込みの土台としてだけ**返す (既存の判定を失わないため)。
+    """
+    out_dir = Path(out_dir)
+    root = Path(data_root) if data_root else data_root_for_reviewed_dir(out_dir)
+    return (
+        review_mirror_path(root, input_path, reviewed_dir=out_dir),
+        legacy_review_mirror_path(root, input_path, reviewed_dir=out_dir),
+    )
 
 
 def _resolve_input(pattern: str) -> Path:
@@ -299,20 +299,35 @@ def _save_items(items: list[QAItem], out_path: Path) -> None:
     _atomic_write_lines(out_path, [qa.model_dump_json() for qa in items])
 
 
-def _save_review_item(qa: QAItem, source_path: Path, out_path: Path) -> None:
+def _save_review_item(
+    qa: QAItem, source_path: Path, out_path: Path,
+    legacy_path: Optional[Path] = None,
+) -> None:
     """Patch one QA into a complete mirror of its source JSONL.
 
     The source file defines membership and order. Existing review results are
     overlaid by qa_id, then ``qa`` is applied. This prevents track/category/file
     filters from dropping rows and also repairs mirrors produced by older
     partial-view saves. Unparseable legacy lines are preserved verbatim.
+
+    保存先が新レイアウトへ移った直後は、まだ入れ子のミラーが存在せず、判定は
+    平たい旧配置 (`legacy_path`) にしか無い。土台をそこから引かないと、画面で
+    1問保存した瞬間に「その1問以外すべて未判定」のミラーが新規作成され、
+    以後そちらが優先されて過去の人手判定が消える (監査 rank 3 の検収で発覚)。
     """
     source_path = source_path.resolve()
     out_path = out_path.resolve()
 
+    # 土台の優先順: 新レイアウトのミラー → 平たい旧配置 → 元ファイル
+    base_path = out_path
+    if not out_path.exists() and legacy_path is not None:
+        legacy_resolved = Path(legacy_path).resolve()
+        if legacy_resolved.exists():
+            base_path = legacy_resolved
+
     reviewed_by_id: dict[str, str] = {}
-    if out_path.exists() and out_path != source_path:
-        with out_path.open("r", encoding="utf-8") as f:
+    if base_path.exists() and base_path != source_path:
+        with base_path.open("r", encoding="utf-8") as f:
             for raw in f:
                 line = raw.rstrip("\r\n")
                 try:
@@ -405,47 +420,15 @@ def _checklist_groups(qa: QAItem) -> list[tuple[str, list[tuple[str, str, str]]]
 
     **減点式**: 問題があるときだけチェックを入れる。チェック0件 = 指摘なし =
     そのまま採用できる。General track と KG-PoC track で観点を変える。
+
+    項目そのものは labels.CHECKLIST_* が正本。以前はここと Web 側に同じ表を
+    手書きしており、誤結合 (別文書の同番号の同一視) を指摘する f_join が Web に
+    しか無く、同じ QA でも見る画面で指摘できる観点が違っていた (監査 rank 37)。
     """
     is_kg = qa.kg_query_type is not None or qa.kg_novelty is not None
-
-    if is_kg:
-        return [
-            ("根拠の検証", [
-                ("f_inf", "回答が引用範囲を超えて推測している", "引用に無い事実・数値・結論を回答が含む"),
-                ("f_mis", "引用が原文と一致していない", "✗印の引用がある / 黄色の箇所と食い違う"),
-                ("f_irr", "根拠チャンクが質問と無関係", "別の話題のチャンクを根拠にしている"),
-            ]),
-            ("KG適性の検証", [
-                ("f_single", "単一チャンク／キーワード一致で解けてしまう",
-                 "ベクター検索だけで届く問い (基準点用の single_fact なら指摘不要)"),
-                ("f_norel", "エンティティ間の関係をたどる必要がない",
-                 "規定→例外→条件のような辿りが無い"),
-                ("f_noagg", "集約・多段推論の要素がない",
-                 "クエリ型タグ (集約/マルチホップ等) に実態が伴わない"),
-            ]),
-            ("品質の検証", [
-                ("f_amb", "質問が一意に解釈できない", "複数の読み方ができる / 対象が曖昧"),
-                ("f_ans", "回答に過不足がある", "誤り・抜け・余計な付け足し"),
-                ("f_diff", "難易度根拠が妥当でない", "難易度タグや説明が実態と合わない"),
-            ]),
-        ]
-
-    # general track
     return [
-        ("根拠の検証", [
-            ("f_inf", "回答が引用範囲を超えて推測している", "引用に無い事実・数値・結論を回答が含む"),
-            ("f_mis", "引用が原文と一致していない", "✗印の引用がある / 黄色の箇所と食い違う"),
-            ("f_irr", "根拠チャンクが質問と無関係", "別の話題のチャンクを根拠にしている"),
-        ]),
-        ("分類の検証", [
-            ("f_asp", "観点・分類タグの意図に合っていない", "タグ通りの問いの構造になっていない"),
-        ]),
-        ("品質の検証", [
-            ("f_amb", "質問が一意に解釈できない", "複数の読み方ができる / 対象が曖昧"),
-            ("f_ans", "回答に過不足がある", "誤り・抜け・余計な付け足し"),
-            ("f_leak", "質問に答えそのものが書かれている", "読むだけで解けてしまう (漏れ)"),
-            ("f_diff", "難易度タグが妥当でない", "検索/回答難易度が実態と合わない"),
-        ]),
+        (g["group"], [(it["key"], it["label"], it["desc"]) for it in g["items"]])
+        for g in checklist_for(is_kg=is_kg)
     ]
 
 
@@ -570,7 +553,9 @@ def render_review_panel(
 def main() -> None:
     args = _parse_args()
     input_path = _resolve_input(args.input)
-    out_path = Path(args.output) / input_path.name
+    out_path, legacy_path = _resolve_review_paths(
+        input_path, Path(args.output), getattr(args, "data_root", None),
+    )
 
     st.set_page_config(page_title="rageval review", layout="wide")
 
@@ -581,8 +566,14 @@ def main() -> None:
         or st.session_state.get("track_filter") != track_filter
     ):
         source_items = _load_items(input_path, track_filter="all")
-        if out_path.exists() and out_path.resolve() != input_path.resolve():
-            reviewed_items = _load_items(out_path, track_filter="all")
+        # 新規約のミラーを優先し、無ければ旧平置きを土台にする (書き出しは新規約)
+        prior = next(
+            (p for p in (out_path, legacy_path)
+             if p.exists() and p.resolve() != input_path.resolve()),
+            None,
+        )
+        if prior is not None:
+            reviewed_items = _load_items(prior, track_filter="all")
             source_items = _merge_reviewed_items(source_items, reviewed_items)
         st.session_state.qa_items_all = source_items
         st.session_state.rv_idx = 0
@@ -595,7 +586,7 @@ def main() -> None:
         "general": "[general (25観点)]",
         "kg_poc":  "[KG-PoC (3軸)]",
     }.get(track_filter, "")
-    input_label_text = f"src <b>{input_path.name}</b> → out <b>{out_path.name}</b>"
+    input_label_text = f"src <b>{input_path.name}</b> → out <b>{out_path}</b>"
 
     st.markdown(
         f"#### RAG評価レビュー <span style='font-size:11px;color:#6B6F76;'>{track_label_text}</span>",

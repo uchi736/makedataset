@@ -951,6 +951,224 @@ def test_sync_kg_type_preserves_traceability():
     assert qa.kg_query_type == "traceability"
 
 
+# ---------- 認定ゲート (型別表で実測の合否を切る, 2026-08-08) ----------
+
+def _kg_qa_for_certify(
+    *,
+    query_type: str = "aggregation",
+    shape: str = "star",
+    source: str = "kg_covered",
+    element_chunks: tuple[str, ...] = ("s__c0001", "s__c0002", "s__c0003"),
+    retrieved: tuple[str, ...] = (),
+    retrieval_mode: str | None = "hybrid_rerank",
+    top_k: int = 10,
+) -> QAItem:
+    """認定ゲート用の最小 QA。retrieval_mode=None なら rag_verification 自体を付けない。"""
+    from datetime import datetime
+    from rageval.schema import (
+        KGPathEdgeProvenance, KGPathProvenance, QAItem, RAGVerification, Rationale,
+    )
+    now = datetime.now()
+    qa = QAItem(
+        qa_id="cert", question="Q?", answer="A",
+        rationale=[Rationale(doc_id="s", chunk_id=c, page=None, text="t")
+                   for c in element_chunks],
+        reasoning_complexity={}, retrieval_difficulty={}, source_structure={},
+        explainability={"evidence_strictness": "multi-ref"},
+        retrieval_level="Hard", answer_level="Medium", difficulty_rationale="",
+        kg_query_type=query_type,
+        kg_path=KGPathProvenance(
+            snapshot_id="s", path_text="C -[R]-> X",
+            edges=[KGPathEdgeProvenance(subject="C", predicate="R", object=f"E{i}",
+                                        source_chunk_id=c, verification_reason="x")
+                   for i, c in enumerate(element_chunks)],
+            verifier_model="j", verified_at=now, shape=shape, source=source,
+        ),
+        generation={"model": "m", "prompt_version": "v",
+                    "generated_at": now.isoformat()},
+    )
+    if retrieval_mode is not None:
+        qa.rag_verification = RAGVerification(
+            top_k=top_k, retrieved_chunk_ids=list(retrieved),
+            retrieval_mode=retrieval_mode, rag_answer="x", answer_match="match",
+            rag_model="m", judge_model="j", verified_at=now,
+        )
+    return qa
+
+
+def test_certify_table_covers_every_kg_query_type():
+    """型を足して認定表を直し忘れたら落ちる (表に無い型は不認定 = 素材が黙って消える)。"""
+    from rageval.rag_verify import CERTIFY_BY_TYPE
+    from rageval.tracks.kg_poc import ALL_KG_QUERY_TYPES
+    missing = [t for t in ALL_KG_QUERY_TYPES if t not in CERTIFY_BY_TYPE]
+    assert missing == [], f"CERTIFY_BY_TYPE に無い型: {missing}"
+    # 供給系統 (source) をキーに引く2行も必ずある
+    assert {"kg_missing", "kg_decoy"} <= set(CERTIFY_BY_TYPE)
+
+
+def test_certify_aggregation_full_coverage_is_not_certified():
+    """回帰 (監査 rank 4): 要素が全て top-k に揃う星は aggregation を名乗れない。
+
+    v1 の星3問は被覆率 100% のまま aggregation として出荷された。合否を切る
+    工程がどこにも無かったのが原因なので、ここで確実に不認定に落ちること、
+    かつ**項目は捨てず型も据え置き** (対照群) であることを凍結する。
+    """
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(retrieved=("s__c0001", "s__c0002", "s__c0003", "z__c0009"))
+    counts = certify_kg_items([qa])
+    assert qa.kg_path.certified is False
+    assert "被覆率 100%" in qa.kg_path.certification_reason
+    assert qa.kg_query_type == "aggregation"      # 型は据え置き
+    assert counts["uncertified:aggregation"] == 1
+    assert counts["total"] == 1
+
+
+def test_certify_aggregation_partial_coverage_is_certified():
+    """要素の一部しか検索で届かない星は「KG が要る」を名乗れる。"""
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(retrieved=("s__c0001",))
+    certify_kg_items([qa])
+    assert qa.kg_path.certified is True
+    assert "被覆率 33%" in qa.kg_path.certification_reason
+
+
+def test_aggregation_coverage_uses_edge_source_chunks():
+    from rageval.rag_verify import aggregation_coverage
+    qa = _kg_qa_for_certify(retrieved=("s__c0001", "s__c0002"))
+    assert aggregation_coverage(qa) == pytest.approx(2 / 3)
+    qa.kg_path.edges = []
+    assert aggregation_coverage(qa) is None
+
+
+def test_certify_aggregation_requires_strict_two_stage_retrieval():
+    """合格線は厳格2段検索の実測を前提にしているので、緩い方式の実測では認定しない。"""
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(retrieved=("s__c0001",), retrieval_mode="hybrid")
+    certify_kg_items([qa])
+    assert qa.kg_path.certified is False
+    assert "厳格2段検索" in qa.kg_path.certification_reason
+
+
+def test_certify_without_measurement_is_not_certified():
+    """rag-verify 未実施の項目は実測が無いので認定しない (fail-closed)。"""
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(retrieval_mode=None)
+    certify_kg_items([qa])
+    assert qa.kg_path.certified is False
+    assert "実測" in qa.kg_path.certification_reason
+
+
+def test_certify_multi_hop_keeps_existing_demotion():
+    """multi_hop の既存の降格挙動 (終端 ∈ top-k → single_fact) を表へ取り込んだこと。"""
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(
+        query_type="multi_hop", shape="chain",
+        element_chunks=("a__c0001", "b__c0002"),
+        retrieved=("b__c0002",),
+    )
+    counts = certify_kg_items([qa])
+    assert qa.kg_query_type == "single_fact"
+    assert qa.kg_path.certified is True          # 降格先そのものは常に認定
+    assert counts["type_synced"] == 1
+    assert counts["certified:single_fact"] == 1
+
+
+def test_certify_multi_hop_certified_when_terminal_unreachable():
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(
+        query_type="multi_hop", shape="chain",
+        element_chunks=("a__c0001", "b__c0002"),
+        retrieved=("z__c0009",),
+    )
+    certify_kg_items([qa])
+    assert qa.kg_query_type == "multi_hop"
+    assert qa.kg_path.certified is True
+    assert "終端チャンク" in qa.kg_path.certification_reason
+
+
+def test_certify_decoy_is_always_certified_even_without_measurement():
+    """棄権が正解の decoy は検索到達を問わない (表のとおり常に認定)。"""
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(
+        query_type="negation_exhaustive", shape="chain", source="kg_decoy",
+        retrieval_mode=None,
+    )
+    counts = certify_kg_items([qa])
+    assert qa.kg_path.certified is True
+    assert counts["certified:kg_decoy"] == 1
+
+
+def test_certify_unknown_type_is_fail_closed():
+    """認定表に無い型 (型を足して表を直し忘れた場合) は不認定に倒す。"""
+    from rageval.rag_verify import certify_kg_items
+    qa = _kg_qa_for_certify(retrieved=("s__c0001",))
+    qa.kg_query_type = "temporal"    # 表に無い型を模擬 (将来の追加)
+    certify_kg_items([qa])
+    assert qa.kg_path.certified is False
+    assert "fail-closed" in qa.kg_path.certification_reason
+
+
+def test_certify_keeps_every_item_and_is_reapplicable():
+    """不認定でも項目は捨てない。既存データに後から掛け直しても結果が変わらない。"""
+    from rageval.rag_verify import certify_kg_items
+    items = [
+        _kg_qa_for_certify(retrieved=("s__c0001", "s__c0002", "s__c0003")),   # 不認定
+        _kg_qa_for_certify(retrieved=("s__c0001",)),                          # 認定
+        _make_qa(),                                                           # kg_path 無し
+    ]
+    first = certify_kg_items(items)
+    second = certify_kg_items(items)
+    assert len(items) == 3
+    assert first == second
+    assert first["total"] == 3
+    assert first["skipped_no_kg_path"] == 1
+    assert first["certified"] == 1 and first["uncertified"] == 1
+    assert items[2].kg_path is None
+
+
+def test_certify_traceability_and_negation_pass_through_upstream_checks():
+    """識別子・除外文言の判定は段0/段1/段3 で済んでいるので、辺があれば認定する。"""
+    from rageval.rag_verify import certify_kg_items
+    trace = _kg_qa_for_certify(query_type="traceability", shape="chain",
+                               element_chunks=("a__c0001", "b__c0002"))
+    neg = _kg_qa_for_certify(query_type="negation_exhaustive", shape="exclusion",
+                             element_chunks=("a__c0001",))
+    certify_kg_items([trace, neg])
+    assert trace.kg_path.certified is True
+    assert neg.kg_path.certified is True
+    # 辺が無ければ照合の根拠が無いので不認定
+    neg.kg_path.edges = []
+    certify_kg_items([neg])
+    assert neg.kg_path.certified is False
+
+
+def test_rag_verify_batch_reports_certification(tmp_path: Path, capsys):
+    """バッチ実行が認定ゲートを掛け、内訳をログに出すこと。"""
+    chunks_dir = tmp_path / "chunks"
+    chunks_dir.mkdir()
+    c0 = Chunk(chunk_id="docA__c0", doc_id="docA", text="rationale here")
+    (chunks_dir / "docA.jsonl").write_text(c0.model_dump_json() + "\n", encoding="utf-8")
+
+    qa = _kg_qa_for_certify(retrieved=(), retrieval_mode=None)
+    in_path = tmp_path / "batch.jsonl"
+    in_path.write_text(qa.model_dump_json() + "\n", encoding="utf-8")
+    out_path = tmp_path / "out.jsonl"
+
+    rag_verify_batch(
+        in_path=in_path, chunks_dir=chunks_dir, top_k=1,
+        rag_model="mock-rag", judge_model="mock-judge",
+        llm=_mock_llm_match, embed=lambda t: [[1.0, 0.0]],
+        chunk_embeddings=np.array([[1.0, 0.0]], dtype=float),
+        out_path=out_path, hybrid=False,
+    )
+
+    out_qa = QAItem.model_validate_json(out_path.read_text(encoding="utf-8").strip())
+    # dense 実測なので厳格2段検索の合格線は掛けられない = 不認定 (項目は残る)
+    assert out_qa.kg_path.certified is False
+    assert out_qa.kg_path.certification_reason
+    assert "認定ゲート" in capsys.readouterr().out
+
+
 def test_two_stage_retrieval_reranker_reorders_pool():
     """2段検索: RRF プールを交差エンコーダの点数で並べ直して top_k に選抜。"""
     import numpy as np

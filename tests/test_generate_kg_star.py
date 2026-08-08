@@ -81,8 +81,14 @@ def test_generate_from_stars_rejects_missing_element(tmp_path: Path):
     assert out.read_text(encoding="utf-8") == ""
 
 
-def test_generate_from_stars_compose_can_exclude_offcontext_branch(tmp_path: Path):
-    """段1が別文脈と判定した要素は除外され、残り3未満なら星ごと棄却。"""
+def test_generate_from_stars_compose_can_exclude_offcontext_branch(tmp_path: Path, capsys):
+    """段1が別文脈と判定した要素は除外され、残りが最小枝数未満なら星ごと棄却。
+
+    回帰 (監査 rank 17): 棄却の閾値は直値でなく MIN_STAR_BRANCHES で、
+    落とした理由と本数を記録に残すこと。
+    """
+    from rageval.generate_kg import MIN_STAR_BRANCHES
+
     chunks_dir = tmp_path / "chunks"
     _write_chunks(chunks_dir)
     qa_calls = []
@@ -95,7 +101,49 @@ def test_generate_from_stars_compose_can_exclude_offcontext_branch(tmp_path: Pat
         provenance_llm=lambda **_: {"entailed": True, "reason": "明記"},
     )
     assert out.read_text(encoding="utf-8") == ""
-    assert not qa_calls   # 3要素未満に縮んだので段2は呼ばれない
+    assert not qa_calls   # 最小枝数未満に縮んだので段2は呼ばれない
+    log = capsys.readouterr().out
+    assert f"MIN_STAR_BRANCHES={MIN_STAR_BRANCHES}" in log
+
+
+def test_star_thresholds_follow_named_constants(tmp_path: Path, capsys):
+    """回帰 (監査 rank 17): 枝数・出典チャンク数の閾値が定数から効くこと。
+
+    枝の下限を 2 に下げると、段0・段1後の両方が同じ値を見るので通る。
+    出典が1チャンクに縮んだ星は MIN_STAR_SUPPORT_CHUNKS で落ちる。
+    """
+    import rageval.generate_kg as g
+
+    chunks_dir = tmp_path / "chunks"
+    _write_chunks(chunks_dir)
+    monkey = g.MIN_STAR_BRANCHES
+    try:
+        g.MIN_STAR_BRANCHES = 2
+        # 耐圧試験 (d__c0001) を除くと 外観検査(d__c0001) + 気密試験(d__c0002) の2枝2チャンク
+        out = generate_from_stars(
+            [_star()], chunks_dir, tmp_path / "out",
+            model="gen", provenance_model="judge",
+            llm=lambda **_: _qa_result(),
+            compose_llm=lambda **_: {"valid": True, "relation": "附属品検査の項目",
+                                     "excluded": ["耐圧試験"]},
+            provenance_llm=lambda **_: {"entailed": True, "reason": "明記"},
+        )
+        qa = QAItem.model_validate_json(out.read_text(encoding="utf-8").strip())
+        assert len(qa.kg_path.edges) == 2
+
+        # 気密試験も除くと出典が d__c0001 の1チャンクに縮む → 出典数で棄却
+        out2 = generate_from_stars(
+            [_star()], chunks_dir, tmp_path / "out2",
+            model="gen", provenance_model="judge",
+            llm=lambda **_: _qa_result(),
+            compose_llm=lambda **_: {"valid": True, "relation": "附属品検査の項目",
+                                     "excluded": ["気密試験"]},
+            provenance_llm=lambda **_: {"entailed": True, "reason": "明記"},
+        )
+        assert out2.read_text(encoding="utf-8") == ""
+        assert f"MIN_STAR_SUPPORT_CHUNKS={g.MIN_STAR_SUPPORT_CHUNKS}" in capsys.readouterr().out
+    finally:
+        g.MIN_STAR_BRANCHES = monkey
 
 
 def test_aggregation_checks_do_not_require_terminal_concentration():
@@ -109,10 +157,13 @@ def test_aggregation_checks_do_not_require_terminal_concentration():
 
 def test_star_position_spread_filter():
     """回帰: 出典位置が離れすぎた星 (別表の脚注の寄せ集め) を列挙段階で落とす。
-    _chunk_position と位置差の計算だけを純粋関数で確かめる。"""
-    from rageval.kg import _chunk_position
-    assert _chunk_position("09_kagi__c0302") == 302
-    assert _chunk_position("09_kagi__c0433") == 433
-    assert _chunk_position("no_suffix") is None
+
+    位置の取り出しは chunker.position_of が正本 (2026-08-08: kg 側の自前実装を
+    廃止し1組に寄せた)。ここは位置差の計算だけを純粋関数で確かめる。
+    """
+    from rageval.chunker import position_of
+    assert position_of("09_kagi__c0302") == 302
+    assert position_of("09_kagi__c0433") == 433
+    assert position_of("no_suffix") is None
     # 実測ケース: 131 チャンク差 > 50 → 落ちる側
     assert 433 - 302 > 50

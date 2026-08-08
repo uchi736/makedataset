@@ -3,13 +3,16 @@
 Single entry-point `generate(prompt, model, ...)` returns a string, or a
 validated Pydantic object when `response_model=` is supplied.
 
-Backend selection:
+Backend selection (優先順は _resolve_backend を参照):
+  - LLM_PROVIDER: 提供元の固定。最優先で効き、"vllm" のときクラウド
+                 (azure/anthropic) へ解決される呼び出しは例外にする
   - "anthropic": model starts with "claude" / "anthropic/", or backend="anthropic"
   - "azure":     backend="azure", or AZURE_OPENAI_ENDPOINT is set and model
                  matches the configured deployment / starts with "azure/"
   - "vllm":      default (OpenAI-compatible endpoint at VLLM_ENDPOINT)
 
 Env vars:
+  - LLM_PROVIDER (vllm / azure / anthropic。未設定ならモデル名から推定)
   - VLLM_ENDPOINT (fallback: VLLM_BASE_URL), VLLM_API_KEY, VLLM_TIMEOUT
   - VLLM_MODEL (optional default generator)
   - VLLM_MODEL_ENDPOINTS (JSON object: モデル名 → base_url。生成と判定で別々の
@@ -24,7 +27,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Optional, Type, TypeVar
+import warnings
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
 from tenacity import (
@@ -116,14 +121,57 @@ def _is_azure_model(model: str) -> bool:
     return bool(azure_deployment) and model == azure_deployment
 
 
-def _resolve_backend(model: str, explicit: Optional[str]) -> str:
-    if explicit:
-        return explicit
+KNOWN_BACKENDS = ("vllm", "azure", "anthropic")
+
+# クラウドへ発呼する提供元。LLM_PROVIDER=vllm はここへ落ちる経路を塞ぐ。
+_CLOUD_BACKENDS = ("azure", "anthropic")
+
+
+def _llm_provider() -> Optional[str]:
+    """LLM_PROVIDER (提供元の固定)。空文字・空白のみは未設定と同じに扱う。"""
+    raw = os.getenv("LLM_PROVIDER", "").strip().lower()
+    return raw or None
+
+
+def _backend_from_model(model: str) -> str:
     if _is_anthropic_model(model):
         return "anthropic"
     if _is_azure_model(model):
         return "azure"
     return "vllm"
+
+
+def _resolve_backend(model: str, explicit: Optional[str]) -> str:
+    """提供元を決める。LLM_PROVIDER が最優先。
+
+    2026-08-08: それまで LLM_PROVIDER は誰も読んでおらず、振り分けはモデル名の
+    一致だけで決まっていた。設定でオンプレに固定したつもりでも、判定モデル名が
+    Azure の配備名と一致した瞬間にクラウドへ発呼して課金が起きる状態で、
+    オンプレ完結・費用最小という前提の唯一の締め金具が死んでいた。以後
+    LLM_PROVIDER=vllm は「クラウドへ出るくらいなら落ちる」締め金具として働かせる
+    (静かに別の提供元へ落ちるより、止まって設定を直させる方が安い)。
+    """
+    pinned = _llm_provider()
+    if pinned and pinned not in KNOWN_BACKENDS:
+        raise LLMError(
+            f"LLM_PROVIDER={pinned!r} は不正です "
+            f"(使えるのは {' / '.join(KNOWN_BACKENDS)})"
+        )
+    if pinned and explicit and pinned != explicit:
+        # どちらを無視したかを黙って決めない。設定と呼び出しの食い違いは設計の誤り。
+        raise LLMError(
+            f"LLM_PROVIDER={pinned} と backend={explicit} が食い違っています。"
+            "どちらかに揃えてください"
+        )
+    resolved = explicit or _backend_from_model(model)
+    if pinned == "vllm" and resolved in _CLOUD_BACKENDS:
+        raise LLMError(
+            f"LLM_PROVIDER=vllm ですが model={model!r} は {resolved} へ解決されます。"
+            "オンプレ完結・費用最小の前提のため、クラウドへの発呼は行いません — "
+            "オンプレ側の配信名を指定するか (JUDGE_MODEL 等)、"
+            "意図してクラウドを使うなら LLM_PROVIDER を外してください"
+        )
+    return pinned or resolved
 
 
 def _azure_deployment_from_model(model: str) -> str:
@@ -160,6 +208,110 @@ def _vllm_endpoint(model: Optional[str] = None) -> str:
 def _vllm_timeout() -> float:
     raw = os.getenv("VLLM_TIMEOUT")
     return float(raw) if raw else 120.0
+
+
+# ---------- モデル系統ごとの追加引数 ----------
+
+
+@dataclass(frozen=True)
+class ModelFamily:
+    """配信名から見分けるモデル系統と、その系統だけに足す呼び出し引数。
+
+    keyword は配信名 (小文字) に含まれていれば該当とみなす語。1つの配信名が
+    複数系統に該当しうる (deepseek-ai/DeepSeek-R1-Distill-Qwen-32B) ので、
+    該当した系統は全て積み上げる。
+    """
+
+    name: str
+    keyword: str
+    # response_format={"type": "json_object"} を送ると壊れる系統か
+    drop_response_format: bool = False
+    # 系統に無条件で足す extra_body
+    extra_body: dict[str, Any] = field(default_factory=dict)
+    # 思考の可否を指定できる系統だけが持つ。allow_thinking → extra_body の差分。
+    # None の系統しか該当しない配信名に allow_thinking=True が来たら警告する。
+    thinking_extra_body: Optional[Callable[[bool], dict[str, Any]]] = None
+
+
+# 2026-08-08: 系統ごとの分岐が if の連鎖でモデル名の部分一致に埋まっていたため、
+# (a) 判定を Nemotron 等の非 Qwen へ移すと段1合成判定の思考指定が例外も警告も
+# 出さず無効化され、素材の採否率だけが静かに変わり (思考なし 3/5・ありで 4/5 の
+# 実測差)、(b) 両方の語を含む配信名では後の分岐が extra_body を代入し直して
+# 前の系統の指定を消していた。表1つに寄せ、積み上げで合成する。
+# 系統を足すときはここへ1行足す。
+MODEL_FAMILIES: tuple[ModelFamily, ...] = (
+    ModelFamily(
+        name="deepseek",
+        keyword="deepseek",
+        # DeepSeek V4 (vLLM) は response_format=json_object を送ると接続が切断される
+        # (2026-08-05 実測: 3/3 で APIConnectionError)。JSON はプロンプト指示 +
+        # 応答側の抽出に任せ、思考は reasoning_effort=low で短く抑える。
+        drop_response_format=True,
+        extra_body={"reasoning_effort": "low"},
+    ),
+    ModelFamily(
+        name="qwen",
+        keyword="qwen",
+        # Qwen3 系は既定で思考 (reasoning) し、判定1コールに数十秒かかるうえ
+        # max_tokens を思考が食い潰すと本文が空になる (2026-08-02 実測)。
+        # 既定は思考オフ。ただし委任連鎖の適用範囲判定など、思考無しでは
+        # 金看板素材を誤棄却する工程 (段1合成判定) だけ allow_thinking=True で
+        # 呼び出し側が明示的に有効化する。Gemma 等のテンプレートはこの引数を
+        # 参照しないため、他系統には渡さない。
+        thinking_extra_body=lambda allow: {
+            "chat_template_kwargs": {"enable_thinking": bool(allow)}
+        },
+    ),
+)
+
+
+def matching_model_families(model: str) -> list[ModelFamily]:
+    """配信名が該当するモデル系統 (表の並び順)。"""
+    low = (model or "").lower()
+    return [fam for fam in MODEL_FAMILIES if fam.keyword in low]
+
+
+def _warn_thinking_unsupported(model: str, backend: str) -> None:
+    warnings.warn(
+        f"allow_thinking=True を受けましたが model={model!r} (backend={backend}) は"
+        "思考の可否を指定できる系統として登録されていません。思考指定は無視されます"
+        " — 段1合成判定の採否率が黙って変わるため、対応する系統を"
+        " llm.MODEL_FAMILIES へ追加してください",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def _merge_extra_body(kwargs: dict[str, Any], extra: dict[str, Any]) -> None:
+    """extra_body は代入でなく積み上げる (入れ子の辞書も要素ごとに重ねる)。"""
+    if not extra:
+        return
+    current = dict(kwargs.get("extra_body") or {})
+    for key, value in extra.items():
+        prev = current.get(key)
+        if isinstance(value, dict) and isinstance(prev, dict):
+            merged = dict(prev)
+            merged.update(value)
+            current[key] = merged
+        else:
+            current[key] = value
+    kwargs["extra_body"] = current
+
+
+def apply_model_family_kwargs(
+    kwargs: dict[str, Any], model: str, *, allow_thinking: bool = False,
+) -> dict[str, Any]:
+    """該当する全系統の追加引数を kwargs へ積み上げる (その場で書き換えて返す)。"""
+    families = matching_model_families(model)
+    for fam in families:
+        if fam.drop_response_format:
+            kwargs.pop("response_format", None)
+        _merge_extra_body(kwargs, fam.extra_body)
+        if fam.thinking_extra_body is not None:
+            _merge_extra_body(kwargs, fam.thinking_extra_body(allow_thinking))
+    if allow_thinking and not any(f.thinking_extra_body for f in families):
+        _warn_thinking_unsupported(model, "vllm")
+    return kwargs
 
 
 # ---------- backend implementations ----------
@@ -208,21 +360,7 @@ def _call_openai_compatible(
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    if "deepseek" in model.lower():
-        # DeepSeek V4 (vLLM) は response_format=json_object を送ると接続が切断される
-        # (2026-08-05 実測: 3/3 で APIConnectionError)。JSON はプロンプト指示 +
-        # 応答側の抽出に任せ、思考は reasoning_effort=low で短く抑える。
-        kwargs.pop("response_format", None)
-        kwargs["extra_body"] = {"reasoning_effort": "low"}
-    if "qwen" in model.lower():
-        # Qwen3 系は既定で思考 (reasoning) し、判定1コールに数十秒かかるうえ
-        # max_tokens を思考が食い潰すと本文が空になる (2026-08-02 実測)。
-        # 既定は思考オフ。ただし委任連鎖の適用範囲判定など、思考無しでは
-        # 金看板素材を誤棄却する工程 (段1合成判定) だけ allow_thinking=True で
-        # 呼び出し側が明示的に有効化する。Gemma 等のテンプレートはこの kwarg を
-        # 参照しないため、他モデルには渡さない。
-        kwargs["extra_body"] = {
-            "chat_template_kwargs": {"enable_thinking": bool(allow_thinking)}}
+    apply_model_family_kwargs(kwargs, model, allow_thinking=allow_thinking)
     resp = client.chat.completions.create(**kwargs)
     return resp.choices[0].message.content or ""
 
@@ -324,6 +462,11 @@ def generate(
     backend = _resolve_backend(model, backend)
     json_mode = response_model is not None or force_json
     timeout = _vllm_timeout()
+
+    if allow_thinking and backend != "vllm":
+        # azure/anthropic 経路は思考指定を中継しない。黙って捨てると
+        # 「思考ありのつもりで測った採否率」が実は思考なし、という取り違えになる。
+        _warn_thinking_unsupported(model, backend)
 
     if backend == "anthropic":
         api_key = os.getenv("ANTHROPIC_API_KEY")

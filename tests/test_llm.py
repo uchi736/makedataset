@@ -1,6 +1,8 @@
-"""Tests for llm.embed backend selection (vLLM / Azure)."""
+"""Tests for llm backend selection (vLLM / Azure) and model family kwargs."""
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,3 +178,201 @@ def test_parse_json_tolerates_stray_leading_brace():
     from rageval.llm import _parse_json
     out = _parse_json('{\n{"entailed": false, "reason": "理由"}')
     assert out == {"entailed": False, "reason": "理由"}
+
+
+# ---------- 提供元の固定 (LLM_PROVIDER) ----------
+
+def test_resolve_backend_without_provider_uses_model_name(monkeypatch):
+    """LLM_PROVIDER 未設定なら従来どおりモデル名と明示引数で決まる。"""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini")
+    assert llm._resolve_backend("gpt-4.1-mini", None) == "azure"
+    assert llm._resolve_backend("azure/gpt-4.1-mini", None) == "azure"
+    assert llm._resolve_backend("claude-sonnet-4", None) == "anthropic"
+    assert llm._resolve_backend("google/gemma-4-26B-A4B-it", None) == "vllm"
+    assert llm._resolve_backend("gpt-4.1-mini", "vllm") == "vllm"
+
+
+def test_llm_provider_vllm_blocks_azure_deployment_name(monkeypatch):
+    """回帰: オンプレ固定のつもりでも配備名一致でクラウドへ発呼していた。"""
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini")
+    with pytest.raises(llm.LLMError, match="LLM_PROVIDER=vllm"):
+        llm._resolve_backend("gpt-4.1-mini", None)
+    with pytest.raises(llm.LLMError, match="LLM_PROVIDER=vllm"):
+        llm._resolve_backend("azure/anything", None)
+
+
+def test_llm_provider_vllm_blocks_anthropic_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    monkeypatch.delenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", raising=False)
+    with pytest.raises(llm.LLMError, match="LLM_PROVIDER=vllm"):
+        llm._resolve_backend("claude-sonnet-4", None)
+
+
+def test_llm_provider_conflicting_explicit_backend_raises(monkeypatch):
+    """設定と呼び出しが食い違うとき、どちらを無視したかを黙って決めない。"""
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    with pytest.raises(llm.LLMError, match="食い違"):
+        llm._resolve_backend("google/gemma-4-26B-A4B-it", "azure")
+
+
+def test_llm_provider_vllm_allows_onprem_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini")
+    assert llm._resolve_backend("google/gemma-4-26B-A4B-it", None) == "vllm"
+    assert llm._resolve_backend("google/gemma-4-26B-A4B-it", "vllm") == "vllm"
+
+
+def test_llm_provider_case_and_space_insensitive(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "  VLLM ")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini")
+    with pytest.raises(llm.LLMError, match="LLM_PROVIDER=vllm"):
+        llm._resolve_backend("gpt-4.1-mini", None)
+
+
+def test_llm_provider_azure_overrides_model_name(monkeypatch):
+    """クラウドを明示的に選んだときは最優先で通す (締め金具は vllm 側だけ)。"""
+    monkeypatch.setenv("LLM_PROVIDER", "azure")
+    monkeypatch.delenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", raising=False)
+    assert llm._resolve_backend("google/gemma-4-26B-A4B-it", None) == "azure"
+
+
+def test_llm_provider_unknown_value_raises(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    with pytest.raises(llm.LLMError, match="LLM_PROVIDER"):
+        llm._resolve_backend("google/gemma-4-26B-A4B-it", None)
+
+
+def test_generate_refuses_cloud_call_when_pinned_to_vllm(monkeypatch):
+    def fail(*a, **k):  # pragma: no cover - 呼ばれてはならない
+        raise AssertionError("LLM_PROVIDER=vllm でクラウド経路を呼んだ")
+
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini")
+    monkeypatch.setattr(llm, "_call_azure_openai", fail)
+    monkeypatch.setattr(llm, "_call_anthropic", fail)
+
+    with pytest.raises(llm.LLMError):
+        llm.generate("hello", model="gpt-4.1-mini")
+    with pytest.raises(llm.LLMError):
+        llm.generate("hello", model="claude-sonnet-4")
+
+
+def test_embedding_backend_ignores_llm_provider(monkeypatch):
+    """埋め込み側は EMBEDDING_PROVIDER のみで決まる (既存挙動を変えない)。"""
+    monkeypatch.setenv("LLM_PROVIDER", "azure")
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    assert llm._resolve_embedding_backend(None, None) == "vllm"
+
+
+# ---------- モデル系統ごとの追加引数 ----------
+
+def test_family_qwen_thinking_off_by_default():
+    kwargs = {"response_format": {"type": "json_object"}}
+    llm.apply_model_family_kwargs(kwargs, "Qwen/Qwen3-32B")
+    assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_family_qwen_thinking_on():
+    kwargs: dict = {}
+    llm.apply_model_family_kwargs(kwargs, "Qwen/Qwen3-32B", allow_thinking=True)
+    assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_family_deepseek_drops_response_format_and_sets_effort():
+    kwargs = {"response_format": {"type": "json_object"}}
+    llm.apply_model_family_kwargs(kwargs, "deepseek-ai/DeepSeek-V4")
+    assert "response_format" not in kwargs
+    assert kwargs["extra_body"] == {"reasoning_effort": "low"}
+
+
+def test_family_deepseek_qwen_accumulates_extra_body():
+    """回帰: 両方の語を含む配信名で qwen 側が reasoning_effort を消していた。
+
+    消えると思考が max_tokens を食い潰して本文が空になり、判定が全件未判定に落ちる。
+    """
+    kwargs = {"response_format": {"type": "json_object"}}
+    llm.apply_model_family_kwargs(
+        kwargs, "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B", allow_thinking=True,
+    )
+    assert "response_format" not in kwargs
+    assert kwargs["extra_body"]["reasoning_effort"] == "low"
+    assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_family_unknown_model_gets_no_extra_body():
+    kwargs = {"response_format": {"type": "json_object"}}
+    llm.apply_model_family_kwargs(kwargs, "google/gemma-4-26B-A4B-it")
+    assert "extra_body" not in kwargs
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_allow_thinking_warns_when_no_family_supports_it():
+    """回帰: 判定を Nemotron へ移すと思考指定が例外も警告も出さず消えていた。"""
+    kwargs: dict = {}
+    with pytest.warns(RuntimeWarning, match="allow_thinking"):
+        llm.apply_model_family_kwargs(
+            kwargs, "nvidia/Llama-3.3-Nemotron-Super-49B-v1.5", allow_thinking=True,
+        )
+    assert "extra_body" not in kwargs
+
+
+def test_no_warning_when_thinking_not_requested(recwarn):
+    llm.apply_model_family_kwargs({}, "nvidia/Llama-3.3-Nemotron-Super-49B-v1.5")
+    assert [w for w in recwarn if issubclass(w.category, RuntimeWarning)] == []
+
+
+def test_matching_model_families_is_order_stable():
+    names = [f.name for f in llm.matching_model_families(
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B")]
+    assert names == ["deepseek", "qwen"]
+    assert llm.matching_model_families("google/gemma-4-26B-A4B-it") == []
+
+
+def test_call_openai_compatible_sends_family_kwargs(monkeypatch):
+    """表が実際に呼び出し引数へ届いていること (配線の凍結)。"""
+    import openai
+
+    captured: dict = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+    class _FakeOpenAI:
+        def __init__(self, **kw):
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+
+    out = llm._call_openai_compatible(
+        prompt="p",
+        model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+        base_url="http://localhost:8000/v1",
+        api_key="EMPTY",
+        temperature=0.0,
+        max_tokens=64,
+        json_mode=True,
+        system=None,
+        timeout=5.0,
+        allow_thinking=True,
+    )
+    assert out == "ok"
+    assert "response_format" not in captured
+    assert captured["extra_body"]["reasoning_effort"] == "low"
+    assert captured["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_generate_warns_when_thinking_requested_on_azure(monkeypatch):
+    """azure 経路は思考指定を中継しない。黙って捨てると採否率の取り違えになる。"""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4.1-mini")
+    monkeypatch.setattr(llm, "_call_azure_openai", lambda **kw: "ok")
+
+    with pytest.warns(RuntimeWarning, match="allow_thinking"):
+        assert llm.generate(
+            "p", model="gpt-4.1-mini", allow_thinking=True) == "ok"

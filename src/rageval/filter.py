@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .chunker import load_chunks
-from .evidence import EvidenceIndex, grounded_fraction, match_rationales
+from .evidence import (
+    EvidenceIndex,
+    LOCAL_NUMBER_TOKEN_RE,
+    grounded_fraction,
+    match_rationales,
+    normalize_numbers,
+)
 from .llm import LLMError, generate as llm_generate
 from .prompts import load_prompt
 from .sampling import CrossDocPolicy, load_cross_doc_policy
@@ -48,29 +54,73 @@ def _split_perspectives(judge_body: str) -> dict[str, str]:
     return {m.group("name"): m.group("body").strip() for m in _SECTION_RE.finditer(judge_body)}
 
 
+# judge.md の「# 共通前提」— 節見出しの前に置かれた全観点共通の指示。
+# 2026-08-08: 観点の節しか抜き出しておらず、共通前提 (複数チャンクを1つの根拠として
+# 扱う指示・JSON だけを返す契約) が判定モデルへ一度も渡っていなかった。プロンプトを
+# 直しても効かない状態だったので、節の手前の本文を前置きとして必ず載せる。
+def _judge_preamble(judge_body: str) -> str:
+    first = _SECTION_RE.search(judge_body)
+    head = judge_body[: first.start()] if first else ""
+    # 区切り線だけの行は前置きに要らない
+    return "\n".join(l for l in head.strip().splitlines() if l.strip() != "---").strip()
+
+
+def _render_anchor_chunks(anchor_chunks: list[tuple[str, Optional[int], str]]) -> str:
+    """元チャンクの本文だけを並べる (見出しは呼び出し側が付ける)。
+
+    judge.md 側の雛形が `[元チャンク]` の見出しを自前で書いているので、
+    差し込む中身と見出しを分けておかないと見出しが二重になる。
+    """
+    if len(anchor_chunks) <= 1:
+        return anchor_chunks[0][2] if anchor_chunks else "(該当チャンクなし)"
+    parts = []
+    for i, (doc_id, page, text) in enumerate(anchor_chunks, 1):
+        page_str = f"p.{page}" if page is not None else "p.?"
+        parts.append(f"--- 元チャンク {i}/{len(anchor_chunks)} ({doc_id} {page_str}) ---\n{text}")
+    return "\n\n".join(parts)
+
+
+def _render_anchor_section(anchor_chunks: list[tuple[str, Optional[int], str]]) -> str:
+    body = _render_anchor_chunks(anchor_chunks)
+    if len(anchor_chunks) <= 1:
+        return f"[元チャンク]\n{body}"
+    return f"[元チャンク {len(anchor_chunks)}個 — すべてQAの根拠候補]\n\n{body}"
+
+
 def _build_judge_prompt(
     name: str,
     section: str,
     qa: QAItem,
     anchor_chunks: list[tuple[str, Optional[int], str]],
+    *,
+    preamble: str = "",
+    input_format: str = "",
 ) -> str:
-    if len(anchor_chunks) <= 1:
-        chunk_block = anchor_chunks[0][2] if anchor_chunks else "(該当チャンクなし)"
-        anchor_section = f"[元チャンク]\n{chunk_block}"
+    """観点の節 + 実データで1回ぶんのプロンプトを組む。
+
+    input_format は judge.md の `## [INPUT_FORMAT]` 節 (差し込み口 {question} /
+    {answer} / {rationale} / {chunk_text} を含む雛形)。節が無ければ従来どおり
+    .py 側の並びで組む — 版によって .md に節が無くても動くようにするため。
+    """
+    rationale_block = "\n".join(f"- ({r.doc_id}:{r.page}) {r.text}" for r in qa.rationale)
+    if input_format:
+        input_block = (
+            input_format
+            .replace("{question}", qa.question)
+            .replace("{answer}", qa.answer)
+            .replace("{rationale}", rationale_block)
+            .replace("{chunk_text}", _render_anchor_chunks(anchor_chunks))
+        )
     else:
-        parts = [f"[元チャンク {len(anchor_chunks)}個 — すべてQAの根拠候補]"]
-        for i, (doc_id, page, text) in enumerate(anchor_chunks, 1):
-            page_str = f"p.{page}" if page is not None else "p.?"
-            parts.append(f"--- 元チャンク {i}/{len(anchor_chunks)} ({doc_id} {page_str}) ---\n{text}")
-        anchor_section = "\n\n".join(parts)
-    input_block = (
-        f"[質問]\n{qa.question}\n\n"
-        f"[回答]\n{qa.answer}\n\n"
-        f"[rationale]\n"
-        + "\n".join(f"- ({r.doc_id}:{r.page}) {r.text}" for r in qa.rationale)
-        + f"\n\n{anchor_section}"
-    )
-    return f"## [{name}]\n\n{section}\n\n{input_block}"
+        input_block = (
+            f"[質問]\n{qa.question}\n\n"
+            f"[回答]\n{qa.answer}\n\n"
+            f"[rationale]\n"
+            + rationale_block
+            + f"\n\n{_render_anchor_section(anchor_chunks)}"
+        )
+    head = f"{preamble}\n\n" if preamble else ""
+    return f"{head}## [{name}]\n\n{section}\n\n{input_block}"
 
 
 _CHUNK_ID_SUFFIX_RE = re.compile(r"__c\d+$")
@@ -131,16 +181,11 @@ def _find_chunk_texts(
 # (第N条・様式第N・別表第N) が両方の文書に別文脈で存在し、かつその文書対が
 # 文書スコープ規則 (エッジ台帳・規格番号・明示参照) で正当化されない場合に検出する。
 
-import unicodedata
-
-_LOCAL_NUM_TOKEN_RE = re.compile(
-    r"第[0-9]+条|様式第[0-9]+号?|別表第[0-9]+"
-)
-
-
-def _norm_ja(s: str) -> str:
-    """全角→半角 (NFKC) + 空白除去。番号トークンの表記揺れを吸収する。"""
-    return _WS_RE.sub("", unicodedata.normalize("NFKC", s))
+# 2026-08-08: 以前はこの検査だけが独自の正規化 (NFKC + 空白除去) と独自の番号
+# 正規表現を持っており、漢数字の条番号を1つも拾えなかった。条番号が漢数字支配の
+# コーパス (chunks_plant で漢数字 4200 対 算用 1052) では検査が黙って無反応に
+# なり、再発防止の対象そのもの (別法令の第63条の同一視) を取りこぼす。
+# 正規化は evidence.normalize_numbers、番号トークンの定義も evidence 側を使う。
 
 
 def _resolve_rationale_chunks(qa: QAItem, full_chunks: list[Chunk]) -> list[Chunk]:
@@ -159,11 +204,11 @@ def detect_cross_doc_number_collision(
     docs = {c.doc_id for c in cited}
     if len(docs) < 2:
         return None
-    qa_text = _norm_ja(qa.question + " " + qa.answer)
-    tokens = set(_LOCAL_NUM_TOKEN_RE.findall(qa_text))
+    qa_text = normalize_numbers(qa.question + " " + qa.answer)
+    tokens = set(LOCAL_NUMBER_TOKEN_RE.findall(qa_text))
     if not tokens:
         return None
-    texts = {c.chunk_id: _norm_ja(c.text) for c in cited}
+    texts = {c.chunk_id: normalize_numbers(c.text) for c in cited}
     for i in range(len(cited)):
         for j in range(i + 1, len(cited)):
             a, b = cited[i], cited[j]
@@ -214,6 +259,7 @@ def score_qa(
     model: str,
     perspectives: dict[str, str],
     llm: LLMCaller,
+    preamble: str = "",
 ) -> tuple[FilterScores, list[str]]:
     """判定観点ごとに judge を回して FilterScores にまとめる。
 
@@ -224,11 +270,14 @@ def score_qa(
     """
     scores = FilterScores()
     failed: list[str] = []
+    # INPUT_FORMAT は観点ではなく全観点共通の入力雛形なので、観点の繰り返しから外す。
+    input_format = perspectives.get("INPUT_FORMAT", "")
     for name in PERSPECTIVES:
         section = perspectives.get(name)
         if not section:
             continue
-        prompt = _build_judge_prompt(name, section, qa, anchor_chunks)
+        prompt = _build_judge_prompt(name, section, qa, anchor_chunks,
+                                     preamble=preamble, input_format=input_format)
         try:
             raw = llm(prompt=prompt, model=model, response_model=None, temperature=0.0)
             data = _parse_json_safely(raw)
@@ -327,6 +376,7 @@ def filter_batch(
         )
     _, body = load_prompt(str(prompt_path))
     perspectives = _split_perspectives(body)
+    preamble = _judge_preamble(body)
 
     # Load and index chunks for per-QA lookup (evidence.EvidenceIndex に一本化)。
     chunks = load_chunks(chunks_dir) if chunks_dir.exists() else []
@@ -352,7 +402,8 @@ def filter_batch(
     for qa in qas:
         anchor_chunks = _find_chunk_texts(qa, chunks, index=ev_index)
         qa.filter_scores, failed = score_qa(
-            qa, anchor_chunks, model=judge_model, perspectives=perspectives, llm=caller
+            qa, anchor_chunks, model=judge_model, perspectives=perspectives,
+            llm=caller, preamble=preamble,
         )
         if failed:
             judge_failures[qa.qa_id] = failed

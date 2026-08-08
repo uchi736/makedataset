@@ -83,3 +83,46 @@ def test_filter_scores_defaults():
 def test_chunk_model():
     c = Chunk(chunk_id="c001", doc_id="doc1", page=1, text="hello")
     assert c.text == "hello"
+
+
+# ---------- 認定ゲートの記録欄 (2026-08-08 設計書「認定ゲート」節) ----------
+
+def _kg_path(**overrides):
+    from rageval.schema import KGPathProvenance
+    base = dict(
+        snapshot_id="snap1",
+        path_text="A -[R]-> B",
+        edges=[],
+        verifier_model="judge",
+        verified_at=datetime.now(),
+    )
+    base.update(overrides)
+    return KGPathProvenance(**base)
+
+
+def test_kg_path_certification_defaults():
+    """既定は「ゲート未適用」を表す (certified=True / 理由は空文字)。"""
+    kp = _kg_path()
+    assert kp.certified is True
+    assert kp.certification_reason == ""
+
+
+def test_old_kg_path_json_without_certification_still_loads():
+    """回帰: 認定欄を持たない既存 JSONL がそのまま読めること (後方互換)。"""
+    from rageval.schema import KGPathProvenance
+    old_json = (
+        '{"snapshot_id": "snap1", "path_text": "A -[R]-> B", "edges": [],'
+        ' "verifier_model": "judge", "verified_at": "2026-08-01T00:00:00",'
+        ' "shape": "star", "source": "kg_covered"}'
+    )
+    kp = KGPathProvenance.model_validate_json(old_json)
+    assert kp.certified is True
+    assert kp.certification_reason == ""
+
+
+def test_kg_path_certification_round_trip():
+    from rageval.schema import KGPathProvenance
+    kp = _kg_path(certified=False, certification_reason="要素チャンクが全て top-10 に揃う")
+    loaded = KGPathProvenance.model_validate_json(kp.model_dump_json())
+    assert loaded.certified is False
+    assert "top-10" in loaded.certification_reason

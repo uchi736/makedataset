@@ -652,6 +652,158 @@ def test_sync_retrieval_difficulty_normalizes_doc_id():
     assert qa.retrieval_difficulty.multi_chunk is True  # チャンクは2つ
 
 
+# ---------------- 2026-08-08 監査 rank 15: 同一文書内の位置差の正本 ----------------
+
+def test_remote_reference_gap_follows_reference_follow_strategy():
+    """難易度判定の遠隔閾値が ReferenceFollow.min_same_doc_gap と同じ出所であること。
+
+    回帰: 生成本体・戦略表・難易度判定の3箇所に別々の直値 10 があり、片方だけ
+    動かすと「素材は通したのに remote_reference=False で出荷」が静かに起きていた。
+    """
+    import rageval.sampling as sampling
+    assert sampling.remote_reference_gap() == sampling.same_doc_gap_for("reference_follow")
+    assert sampling.same_doc_gap_for("standards_reference") is None  # 同一文書の遠隔対は認めない
+
+
+def test_set_min_same_doc_gap_moves_material_and_difficulty_together():
+    """位置差を差し替えると、素材選び・難易度判定の両方が同時に動くこと。"""
+    import rageval.sampling as sampling
+    from rageval.sampling import compute_retrieval_difficulty, score_retrieval_level
+    original = sampling.remote_reference_gap()
+    anchors = [_ch("d1", 0, text="第9条を準用する", refs=["第9条"]), _ch("d1", 5, text="第9条 …")]
+    try:
+        # 既定 (10) では位置差 5 は遠隔ではない: 素材としても難易度としても不成立
+        assert score_retrieval_level(anchors) == "Medium"
+        assert compute_retrieval_difficulty(anchors).remote_reference is False
+        assert ReferenceFollow(min_same_doc_gap=sampling.same_doc_gap_for("reference_follow")) \
+            ._same_doc_ok(anchors[0], anchors[1]) is False
+        sampling.set_min_same_doc_gap(4)
+        assert sampling.same_doc_gap_for("reference_follow") == 4
+        assert score_retrieval_level(anchors) == "Hard"
+        assert compute_retrieval_difficulty(anchors).remote_reference is True
+        strat = sampling.ASPECT_STRATEGIES["reference_follow"]
+        assert strat._same_doc_ok(anchors[0], anchors[1]) is True
+        # 戦略の他の設定は失われない
+        assert strat.prefer_specific is True and strat.requires_multi_doc is True
+    finally:
+        sampling.set_min_same_doc_gap(original)
+
+
+# ---------------- 2026-08-08 監査 rank 26: 跨ぎ必須は戦略側の宣言から導く ----------------
+
+def test_multi_doc_required_aspects_derived_from_strategies():
+    """異文書跨ぎ必須の素材キーが戦略表の宣言から導かれること (手書き集合の廃止)。"""
+    import rageval.sampling as sampling
+    assert sampling.multi_doc_required_aspects() == {
+        "multi_source_integration", "multi_doc_reference", "multi_hop", "reference_follow",
+    }
+
+
+def test_multi_doc_required_aspects_picks_up_new_strategy(monkeypatch):
+    """新しい多文書戦略を足したら、手を入れずに早期棄却の対象へ入ること。"""
+    import rageval.sampling as sampling
+    table = dict(sampling.ASPECT_STRATEGIES)
+    table["新戦略"] = MultiDocByEmbedding(n=2, force_distinct_doc=True, requires_multi_doc=True)
+    monkeypatch.setattr(sampling, "ASPECT_STRATEGIES", table)
+    assert "新戦略" in sampling.multi_doc_required_aspects()
+
+
+# ---------------- 2026-08-08 監査 rank 25: single_fact の素材キー ----------------
+
+def test_kg_single_fact_key_registered_and_unfiltered():
+    """single_fact 用の素材キーが登録され、数量系チャンクへ絞られないこと。
+
+    回帰: 既存観点 "quantitative_calc" の流用で互換述語 _has_numeric_calc が掛かり、
+    アンカーが「数値2個以上+比較語」を含むチャンクだけに縮んでいた。
+    """
+    from rageval.sampling import ASPECT_COMPATIBILITY, ASPECT_STRATEGIES, find_compatible_chunks
+    chunks = [
+        _ch("d", 0, text="点検は毎日行う。"),                    # 数値なし
+        _ch("d", 1, text="厚さは 3mm 以上 5mm 以下とする。"),     # 数量系
+    ]
+    assert "kg_single_fact" in ASPECT_COMPATIBILITY          # 既定 _always への素通りに頼らない
+    assert "kg_single_fact" not in ASPECT_STRATEGIES         # 1チャンクで完結する型
+    assert len(find_compatible_chunks("kg_single_fact", chunks)) == 2
+    assert len(find_compatible_chunks("quantitative_calc", chunks)) == 1  # 旧キーは絞る
+    sampler = AnchorSampler(chunks, embeddings=None)
+    out = sampler.select("kg_single_fact", random.Random(0))
+    assert out is not None and len(out) == 1
+
+
+# ---------------- 2026-08-08 監査 rank 27: 規格団体の接頭辞は1定義 ----------------
+
+def test_standards_ref_and_global_ref_share_one_prefix_set():
+    """「規格共有で対を組んでよい」と「規格参照である」の判定が食い違わないこと。
+
+    回帰: _GLOBAL_REF_RE が JPI/JEC/JEM/API/EN/NFPA を含むのに、観点側の列挙は
+    JIS|ISO|IEC|ASME だけで、同じチャンクが両方の規則で別扱いになっていた。
+    """
+    import rageval.sampling as sampling
+    from rageval.sampling import _has_standards_ref, _is_global_ref
+    for prefix in sampling.STANDARD_PREFIXES:
+        ref = f"{prefix} 1234"
+        assert _is_global_ref(ref), prefix
+        assert _has_standards_ref(_ch("d", 0, refs=[ref])), prefix
+    assert _has_standards_ref(_ch("d", 0, refs=["JPI-7S-77"])) is True
+    assert _has_standards_ref(_ch("d", 0, refs=["第3章"])) is False
+
+
+def test_set_standard_prefixes_moves_both_rules():
+    """接頭辞を差し替えると、異文書対の成立判定と観点の適合述語が同時に動くこと。
+
+    社内文書番号の体系へ替えたときに、コードを直さないと供給が消える状態にしない。
+    """
+    import rageval.sampling as sampling
+    from rageval.sampling import _has_standards_ref, _is_global_ref
+    original = sampling.STANDARD_PREFIXES
+    try:
+        sampling.set_standard_prefixes(["SPEC"])
+        assert _is_global_ref("SPEC-001") is True
+        assert _has_standards_ref(_ch("d", 0, refs=["SPEC-001"])) is True
+        assert _is_global_ref("JIS B 1083") is False        # 台帳に無い体系は認めない
+        assert _has_standards_ref(_ch("d", 0, refs=["JIS B 1083"])) is False
+    finally:
+        sampling.set_standard_prefixes(original)
+    assert _is_global_ref("JIS B 1083") is True
+
+
+def test_apply_standard_prefixes_from_ledger(tmp_path):
+    """台帳 (data/seeds) から接頭辞を読み込めること。無ければ既定のまま。"""
+    import json as _json
+    import rageval.sampling as sampling
+    original = sampling.STANDARD_PREFIXES
+    ledger = tmp_path / "standard_prefixes.json"
+    ledger.write_text(_json.dumps(["JIS", "SPEC"]), encoding="utf-8")
+    try:
+        assert sampling.apply_standard_prefixes(tmp_path / "missing.json") == original
+        assert sampling.apply_standard_prefixes(ledger) == ("JIS", "SPEC")
+    finally:
+        sampling.set_standard_prefixes(original)
+
+
+# ---------------- 2026-08-08 監査 rank 30: 台帳のパスと不在時の警告 ----------------
+
+def test_seed_ledger_paths_share_one_root():
+    """台帳の既定パスが1つの置き場から作られていること (直書きの再発防止)。"""
+    from rageval.generate import DEFAULT_ANCHOR_PAIRS, DEFAULT_DOC_ALIASES, DEFAULT_SEEDS
+    from rageval.sampling import (
+        DEFAULT_ANCHOR_PAIRS_PATH, DEFAULT_DOC_ALIASES_PATH, SEEDS_DIR,
+    )
+    assert DEFAULT_ANCHOR_PAIRS == DEFAULT_ANCHOR_PAIRS_PATH == SEEDS_DIR / "anchor_pairs_manual_v1.jsonl"
+    assert DEFAULT_DOC_ALIASES == DEFAULT_DOC_ALIASES_PATH == SEEDS_DIR / "doc_aliases.json"
+    from pathlib import Path as _Path
+    assert _Path(DEFAULT_SEEDS).parent == SEEDS_DIR
+
+
+def test_load_cross_doc_policy_warns_on_missing_ledger(tmp_path, capsys):
+    """台帳が見つからないとき、黙って空規則にせず警告を出すこと。"""
+    from rageval.sampling import load_cross_doc_policy
+    policy = load_cross_doc_policy(tmp_path / "no_pairs.jsonl", tmp_path / "no_aliases.json")
+    out = capsys.readouterr().out
+    assert "解決済みエッジ台帳" in out and "文書別名台帳" in out
+    assert policy.allowed_chunk_pairs == set() and policy.doc_aliases == {}
+
+
 def test_article_match_rejects_branch_numbered_articles():
     """回帰: 「第56条」が「第56条の6の2」(別の条) に部分一致しないこと。
     kg_missing 供給の偽参照 (2026-08-03 発覚) の再発防止。"""

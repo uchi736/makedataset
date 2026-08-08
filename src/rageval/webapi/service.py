@@ -2,8 +2,10 @@
 
 Streamlit 版 review_app.py と同じ規約で動く:
 - 読み込みは data/ 配下のディレクトリ・ファイル・glob
-- data/reviewed/<元ファイル名> があればそちらを優先して読む (レビュー済みの続きから)
-- レビュー保存は data/reviewed/<元ファイル名> へのミラー書き出し
+- レビュー保存は data/reviewed/<データセット>/<元ファイル名> へのミラー書き出し。
+  保存先の決定は review_mirror_path が1箇所で行い、Streamlit 版もこれを呼ぶ
+- 平たい旧配置 data/reviewed/<元ファイル名> は**読み込みのみ**後方互換で見る
+  (既存のレビュー結果を失わないため)
 - 根拠照合は「空白を無視した逐語一致」(filter.py / review_app.py と同じ規則)
 """
 
@@ -76,7 +78,12 @@ def resolve_paths(data_root: Path, rel: str) -> list[Path]:
 
 
 def list_sources(data_root: Path) -> dict[str, Any]:
-    """データセット候補 (JSONL を含むディレクトリ) とチャンクディレクトリの一覧。"""
+    """データセット候補 (JSONL を含むディレクトリ) とチャンクディレクトリの一覧。
+
+    reviewed/ は `reviewed/<データセット>/…` の入れ子なので、直下1段だけ潜って
+    `reviewed/raw_kg_v1` の形でも候補に出す (潜らないと人手のレビュー結果が
+    一覧から消える)。
+    """
     root = data_root.resolve()
     datasets: list[dict[str, Any]] = []
     chunk_dirs: list[str] = []
@@ -90,12 +97,20 @@ def list_sources(data_root: Path) -> dict[str, Any]:
             if jsonls:
                 chunk_dirs.append(d.name)
             continue
-        if not jsonls:
+        if jsonls:
+            datasets.append({
+                "name": d.name,
+                "files": [f.name for f in jsonls],
+            })
+        if d.name != REVIEWED_DIR_NAME:
             continue
-        datasets.append({
-            "name": d.name,
-            "files": [f.name for f in jsonls],
-        })
+        for sub in sorted(p for p in d.iterdir() if p.is_dir()):
+            sub_jsonls = sorted(sub.glob("*.jsonl"))
+            if sub_jsonls:
+                datasets.append({
+                    "name": f"{d.name}/{sub.name}",
+                    "files": [f.name for f in sub_jsonls],
+                })
     return {"datasets": datasets, "chunk_dirs": chunk_dirs}
 
 
@@ -105,29 +120,57 @@ def _is_kg(item: dict[str, Any]) -> bool:
     return item.get("kg_query_type") is not None or item.get("kg_novelty") is not None
 
 
-def review_mirror_path(data_root: Path, src: Path) -> Path:
+def reviewed_root(data_root: Path, reviewed_dir: Optional[Path] = None) -> Path:
+    """レビュー結果を置く根 (既定は data_root/reviewed)。"""
+    if reviewed_dir is not None:
+        return Path(reviewed_dir).resolve()
+    return Path(data_root).resolve() / REVIEWED_DIR_NAME
+
+
+def data_root_for_reviewed_dir(reviewed_dir: Path) -> Path:
+    """保存先ディレクトリから data 置き場を逆算する。
+
+    Streamlit 版は `--out data/reviewed` / `--reviewed-out data/reviewed` の形で
+    保存先だけを受け取るので、データセット名を掘るための根をここから戻す。
+    """
+    p = Path(reviewed_dir)
+    return p.parent if p.name == REVIEWED_DIR_NAME else p
+
+
+def review_mirror_path(
+    data_root: Path, src: Path, *, reviewed_dir: Optional[Path] = None,
+) -> Path:
     """レビュー結果の保存先 (元ファイルのデータセットごとに分ける)。
 
+    **人手のレビュー結果の置き場はこの関数だけが決める** (2026-08-08 一本化)。
     以前は `data/reviewed/<ファイル名>` だけで決めていたため、別ディレクトリの
     同名ファイル (raw_x/batch_1.jsonl と filtered_x/batch_1.jsonl のような、
     このリポジトリでは標準的な命名) が同じミラーを共有し、一方のレビュー結果を
-    もう一方が読み込む・上書きするという破壊が起きていた。
+    もう一方が読み込む・上書きするという破壊が起きていた。しかも Web 側だけ
+    入れ子規約へ移った結果、同じ QA の判定が Streamlit からは見えず次の保存で
+    未判定のまま上書きされていた (監査 rank 3)。
     データセット (data からの相対ディレクトリ) をミラー側にも掘る。
     """
-    root = data_root.resolve()
-    reviewed_dir = root / REVIEWED_DIR_NAME
+    root = Path(data_root).resolve()
+    out_dir = reviewed_root(root, reviewed_dir)
+    if _is_within(Path(src).parent, out_dir):
+        return src  # すでに保存先の配下 (レビュー済みファイルを直接開いている)
     try:
-        rel_dir = src.resolve().parent.relative_to(root)
+        rel_dir = Path(src).resolve().parent.relative_to(root)
     except ValueError:
         rel_dir = Path()
-    if rel_dir == Path(REVIEWED_DIR_NAME) or str(rel_dir).startswith(REVIEWED_DIR_NAME + "/"):
-        return src  # すでに reviewed/ 配下
-    return reviewed_dir / rel_dir / src.name
+    return out_dir / rel_dir / Path(src).name
 
 
-def _legacy_mirror_path(data_root: Path, src: Path) -> Path:
-    """旧レイアウト (data/reviewed/<ファイル名>)。読み込み時のみ後方互換で見る。"""
-    return data_root.resolve() / REVIEWED_DIR_NAME / src.name
+def legacy_review_mirror_path(
+    data_root: Path, src: Path, *, reviewed_dir: Optional[Path] = None,
+) -> Path:
+    """旧レイアウト (data/reviewed/<ファイル名>)。読み込み時のみ後方互換で見る。
+
+    平たい旧配置に既存のレビュー結果が残っているので、書き出しは新レイアウトへ
+    寄せつつ、土台として読むのは続ける。
+    """
+    return reviewed_root(data_root, reviewed_dir) / Path(src).name
 
 
 def load_items(
@@ -141,16 +184,15 @@ def load_items(
     - パースに失敗した行はスキップして件数だけ返す。
     """
     files = resolve_paths(data_root, rel)
-    reviewed_dir = data_root.resolve() / REVIEWED_DIR_NAME
     items: list[dict[str, Any]] = []
     skipped: dict[str, int] = {}
     reviewed_override: list[str] = []
     id_counts: dict[str, int] = {}
     for f in files:
         source = f
-        if f.parent != reviewed_dir:
-            mirror = review_mirror_path(data_root, f)
-            legacy = _legacy_mirror_path(data_root, f)
+        mirror = review_mirror_path(data_root, f)
+        if mirror != f:  # 元ファイル自体が reviewed/ 配下なら差し替えない
+            legacy = legacy_review_mirror_path(data_root, f)
             if mirror.exists():
                 source = mirror
                 reviewed_override.append(f.name)
@@ -422,11 +464,10 @@ def save_review(
     if target_file is None:
         raise ServiceError(f"対象ファイルが見つかりません: {source_name}")
 
-    reviewed_dir = data_root.resolve() / REVIEWED_DIR_NAME
     mirror = review_mirror_path(data_root, target_file)
-    legacy = _legacy_mirror_path(data_root, target_file)
-    if target_file.parent == reviewed_dir:
-        base = target_file
+    legacy = legacy_review_mirror_path(data_root, target_file)
+    if mirror == target_file:
+        base = target_file  # reviewed/ 配下を直接開いている
     elif mirror.exists():
         base = mirror
     elif legacy.exists():
@@ -463,8 +504,8 @@ def save_review(
         raise ServiceError(f"qa_id が見つかりません: {qa_id} (in {base.name})")
 
     # 書き込み先は常にミラー (元ファイルは書き換えない)。
-    # ただし reviewed/ 内のファイルを直接開いている場合はそのまま上書き。
-    dest = target_file if target_file.parent == reviewed_dir else mirror
+    # ただし reviewed/ 内のファイルを直接開いている場合は mirror == target_file。
+    dest = mirror
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("w", encoding="utf-8") as fh:
         for ln in out_lines:

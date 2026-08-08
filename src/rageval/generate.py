@@ -26,6 +26,10 @@ from .prompts import load_prompt, render
 from . import sampling as _sampling
 from .evidence import normalize_rationale_ids
 from .sampling import (
+    DEFAULT_ANCHOR_PAIRS_PATH,
+    DEFAULT_DOC_ALIASES_PATH,
+    DEFAULT_STANDARD_PREFIXES_PATH,
+    SEEDS_DIR,
     AnchorSampler,
     compute_embeddings,
     compute_retrieval_difficulty,
@@ -42,7 +46,14 @@ from .tracks.kg_poc import (
 
 DEFAULT_PROMPT = "prompts/generate.md"
 DEFAULT_PROMPT_KG = "prompts/generate_kg_poc.md"
-DEFAULT_SEEDS = "data/seeds/seeds.json"
+# 種と台帳の既定パスは sampling.SEEDS_DIR の1定義から作る。台帳を読む側と
+# 別々に直書きしていたため、コーパスを替えて台帳を作り直すと「CLI 経由だけ新台帳・
+# filter/enrich は旧台帳」という食い違いが無警告で起きていた (2026-08-08 監査 rank 30)。
+# 他モジュール (cli / filter / enrich) はこの名前を引くこと。
+DEFAULT_SEEDS = str(SEEDS_DIR / "seeds.json")
+DEFAULT_ANCHOR_PAIRS = DEFAULT_ANCHOR_PAIRS_PATH
+DEFAULT_DOC_ALIASES = DEFAULT_DOC_ALIASES_PATH
+DEFAULT_STANDARD_PREFIXES_LEDGER = DEFAULT_STANDARD_PREFIXES_PATH
 
 # 難易度は乱数では割り当てない。retrieval_level はチャンク組成から決定論的に
 # 算出 (sampling.score_retrieval_level)、answer_level は判定LLMが実態から確定する。
@@ -161,6 +172,37 @@ def _build_kg_cell_queue(
     return queue
 
 
+def _bump(counter: dict[tuple[str, str], int], key: str, reason: str) -> None:
+    """層別 (素材キー × 理由) の件数を1つ増やす。"""
+    counter[(key, reason)] = counter.get((key, reason), 0) + 1
+
+
+def early_skip_reason(sampler_key: str, anchors: list[Chunk]) -> Optional[str]:
+    """異文書跨ぎが要る素材キーで、このアンカー組が題として成立しない理由を返す。
+
+    成立するなら None。異 doc 跨ぎが本質の戦略で sampler が単一 doc に縮退した組を
+    ここで落とさないと、「multi-doc の問いを作れ」と LLM に頼んでも物理的に成立せず
+    偽 traceability が量産される。
+    例外: 同一文書内の遠隔対を認める戦略 (min_same_doc_gap を持つもの) は、本丸の
+    チャンク単位化 (2026-07-01) 以降、位置差がその値以上なら一級素材として通す
+    (ここを塞いだままだと 09_kagi の遠隔参照 334 対が全部捨てられる)。
+    位置差の出所は sampling 側の戦略定義1箇所だけ — 直値を写すと素材選びと
+    食い違って「素材は通したのに生成が黙って捨てる」が起きる (2026-08-08 監査 rank 15)。
+    理由は層別に数えるための短い文言で返す。
+    """
+    if len({c.doc_id for c in anchors}) >= 2:
+        return None
+    if len(anchors) < 2:
+        return "単一doc・アンカー1件"
+    required_gap = _sampling.same_doc_gap_for(sampler_key)
+    if required_gap is None:
+        return "単一doc・同一文書の遠隔対を認めない戦略"
+    actual_gap = max(c.position for c in anchors) - min(c.position for c in anchors)
+    if actual_gap >= required_gap:
+        return None
+    return f"単一doc・位置差 {actual_gap} < {required_gap}"
+
+
 def _format_examples_block(items: list[str], prefix: str = "- ") -> str:
     """Render a list of strings as a bullet block for prompt injection."""
     if not items:
@@ -269,26 +311,50 @@ def _render_generate_prompt_kg(
     return render(prompt_body, variables)
 
 
-def _kg_aspect_for_strategy(spec: dict[str, Any]) -> str:
-    """Map KG spec → existing AnchorSampler aspect key so we can reuse strategies.
+# (kg_query_type, kg_novelty) → 素材キー (AnchorSampler の互換述語・戦略の引き当て先)。
+# 2026-08-08 監査 rank 25: if 連鎖で組み立てていたため、single_fact が既存観点
+# "quantitative_calc" を流用しており、互換述語 _has_numeric_calc でアンカーが
+# 数量系チャンクだけに黙って絞られていた (chunks_plant 3175→1407)。
+# 素材キーはここが唯一の対応表で、キーは全て sampling 側に明示登録してある。
+#
+# 関係を問う組は、埋め込み類似ペア (似ているだけで関係が無い) ではなく実在参照
+# (第N条→本文/別表) で繋がったペアを使う。類似ペアで作った multi_hop/aggregation は
+# 判定で answerability/grounding=3 で大量死した。
+# aggregation は列挙系なので類似散在 (multi_source_integration) を使えるが、
+# 関係・手順の未知性セルでは参照辿りの方が素材が揃う。
+KG_SAMPLER_KEYS: dict[tuple[str, str], str] = {
+    ("single_fact",         "unknown_term"):        "kg_single_fact",
+    ("single_fact",         "unknown_relation"):    "kg_single_fact",
+    ("single_fact",         "procedural_relation"): "kg_single_fact",
+    ("multi_hop",           "unknown_term"):        "reference_follow",
+    ("multi_hop",           "unknown_relation"):    "reference_follow",
+    ("multi_hop",           "procedural_relation"): "reference_follow",
+    ("aggregation",         "unknown_term"):        "multi_source_integration",
+    ("aggregation",         "unknown_relation"):    "reference_follow",
+    ("aggregation",         "procedural_relation"): "reference_follow",
+    ("traceability",        "unknown_term"):        "reference_follow",
+    ("traceability",        "unknown_relation"):    "reference_follow",
+    ("traceability",        "procedural_relation"): "reference_follow",
+    ("negation_exhaustive", "unknown_term"):        "reference_follow",
+    ("negation_exhaustive", "unknown_relation"):    "reference_follow",
+    ("negation_exhaustive", "procedural_relation"): "reference_follow",
+}
 
-    Heuristic: 関係系/手順系の novelty では multi-anchor 戦略を選ぶ.
-    (= 異なる doc 強制で、関係を辿る材料を出す).
-    single_fact は SingleChunk で十分。
+
+def kg_sampler_key(spec: dict[str, Any]) -> str:
+    """KG の (型, 未知性) セルに対応する素材キーを表から引く。
+
+    表に無いセルは fail-closed で落とす。裸の else で multi_hop 用の素材へ倒すと、
+    型を足したときにその型だけ黙って別の素材で作られる。
     """
-    qt, nov = spec["kg_query_type"], spec["kg_novelty"]
-    if qt == "single_fact":
-        return "quantitative_calc"  # → SingleChunk
-    # 関係を問う組は、埋め込み類似ペア (似ているだけで関係が無い) ではなく
-    # 実在参照 (第N条→本文/別表) で繋がったペアを使う。類似ペアで作った
-    # multi_hop/aggregation は判定で answerability/grounding=3 で大量死した。
-    if qt in ("multi_hop", "traceability"):
-        return "reference_follow"
-    if nov in ("unknown_relation", "procedural_relation"):
-        return "reference_follow"
-    if qt == "aggregation":
-        return "multi_source_integration"  # 列挙系は類似散在で可 (unknown_term のみ到達)
-    return "reference_follow"
+    cell = (spec["kg_query_type"], spec["kg_novelty"])
+    try:
+        return KG_SAMPLER_KEYS[cell]
+    except KeyError:
+        raise ValueError(
+            f"素材キーが未登録のセル: {cell[0]}×{cell[1]}. "
+            f"generate.KG_SAMPLER_KEYS に登録してから生成すること"
+        ) from None
 
 
 def generate_batch(
@@ -303,8 +369,10 @@ def generate_batch(
     seed: int = 42,
     llm: Optional[LLMCaller] = None,
     kg_mix: Optional[list[tuple[str, str, int]]] = None,
-    anchor_pairs_path: Optional[Path] = Path("data/seeds/anchor_pairs_manual_v1.jsonl"),
-    doc_aliases_path: Optional[Path] = Path("data/seeds/doc_aliases.json"),
+    anchor_pairs_path: Optional[Path] = DEFAULT_ANCHOR_PAIRS,
+    doc_aliases_path: Optional[Path] = DEFAULT_DOC_ALIASES,
+    standard_prefixes_path: Optional[Path] = DEFAULT_STANDARD_PREFIXES_LEDGER,
+    min_same_doc_gap: Optional[int] = None,
 ) -> Path:
     """Generate a batch of QAs. `track` chooses between general / kg_poc.
 
@@ -321,7 +389,7 @@ def generate_batch(
     if track == "kg_poc":
         default_prompt = Path(DEFAULT_PROMPT_KG)
         render_fn = _render_generate_prompt_kg
-        sampler_key_fn = _kg_aspect_for_strategy
+        sampler_key_fn = kg_sampler_key
     else:
         default_prompt = Path(DEFAULT_PROMPT)
         render_fn = _render_generate_prompt
@@ -331,6 +399,18 @@ def generate_batch(
     rng = random.Random(seed)
     meta, body = load_prompt(str(prompt_path))
     prompt_version = meta.get("prompt_version", "unknown")
+
+    # 素材の採否を動かす設定は、採用値を必ず実行時に出す (後から「いつから変わったか」を
+    # 追えるようにするため)。位置差はチャンク粒度が変わると意味自体が変わる。
+    if min_same_doc_gap is not None:
+        gap = _sampling.set_min_same_doc_gap(min_same_doc_gap)
+    else:
+        gap = _sampling.remote_reference_gap()
+    prefixes = _sampling.apply_standard_prefixes(standard_prefixes_path)
+    print(f"[generate] 同一文書内の遠隔参照とみなす位置差: {gap} "
+          f"(素材選び・早期棄却・難易度判定で共通) / 規格接頭辞: {'、'.join(prefixes)}")
+    if not Path(seeds_path).exists():
+        print(f"[generate] 警告: 種 (few-shot) が見つからない ({seeds_path}) — 例示なしで作問する")
 
     # v3: 文書スコープ規則 — 異文書対はエッジ台帳・規格番号・明示参照でのみ成立。
     # 裸の「第N条」一致で別法令を繋ぐ誤結合 (plant_v15 で 3/25 混入) を素材段階で絶つ。
@@ -363,6 +443,13 @@ def generate_batch(
     if track == "kg_poc":
         cell_queue = _build_kg_cell_queue(n, kg_mix, rng)
 
+    # 異文書跨ぎが必須の素材キーは戦略表 (requires_multi_doc) から導く。手書きの集合を
+    # 繰り返しの内側に置くと、多文書戦略を足したときに早期棄却をすり抜ける。
+    multi_doc_required = _sampling.multi_doc_required_aspects()
+    # 早期棄却の層別内訳 (素材キー × 理由)。捨てた件数を出さないと、供給が痩せた原因が
+    # 位置差の閾値なのか素材不良なのかを事後に切り分けられない。
+    early_skips: dict[tuple[str, str], int] = {}
+
     written = 0
     with out_path.open("w", encoding="utf-8") as f:
         for i in range(n):
@@ -376,31 +463,17 @@ def generate_batch(
             if anchors is None:
                 # コーパスがこの観点の組成 (複数チャンク/複数文書) を作れない → skip
                 print(f"[generate] skip ({sampler_key}): コーパスが必要なチャンク組成を作れず")
+                _bump(early_skips, sampler_key, "コーパスが組成を作れず")
                 continue
-            # 異 doc 跨ぎが本質である戦略 (multi_doc_reference / multi_source_integration /
-            # multi_hop) で sampler が単一 doc に縮退した場合は早期 skip。
-            # こうしないと「multi-doc の問いを作れ」と LLM に頼んでも、anchor が1 doc
-            # しか無いので物理的に成立せず、偽 traceability が量産される。
-            # 例外: reference_follow は本丸のチャンク単位化 (2026-07-01) 以降、
-            # 同一文書内でも遠隔 (位置差 >= 10) の参照ペアなら一級素材として通す。
-            # 文書スコープ規則の導入で異文書対の供給が正しく絞られたため、
-            # ここを塞いだままだと 09_kagi の遠隔参照 334 対が全部捨てられる。
-            _MULTI_DOC_REQUIRED = {
-                "multi_doc_reference", "multi_source_integration", "multi_hop",
-                "reference_follow",  # kg_poc の unknown_relation/procedural_relation 系
-            }
-            if sampler_key in _MULTI_DOC_REQUIRED:
-                anchor_docs = {c.doc_id for c in anchors}
-                same_doc_remote_ok = (
-                    sampler_key == "reference_follow"
-                    and len(anchors) >= 2
-                    and max(c.position for c in anchors) - min(c.position for c in anchors) >= 10
-                )
-                if len(anchor_docs) < 2 and not same_doc_remote_ok:
+            if sampler_key in multi_doc_required:
+                reason = early_skip_reason(sampler_key, anchors)
+                if reason:
+                    anchor_docs = sorted({c.doc_id for c in anchors})
                     print(
                         f"[generate] skip ({sampler_key}): anchor が単一 doc に縮退 "
-                        f"(docs={sorted(anchor_docs)}) — 異 doc 跨ぎも遠隔参照も作れず"
+                        f"(docs={anchor_docs}, {reason}) — 異 doc 跨ぎも遠隔参照も作れず"
                     )
+                    _bump(early_skips, sampler_key, reason)
                     continue
             few_shot = _sample_seeds(seeds_path, rng, k=3)
             prompt = render_fn(body, anchors, spec, few_shot)
@@ -556,6 +629,12 @@ def generate_batch(
                 print(f"[generate] {qa.qa_id} {tag} anchors={len(anchors)} docs={doc_ids}")
 
     print(f"[generate] wrote {written}/{n} QAs to {out_path} (track={track})")
+    if early_skips:
+        total = sum(early_skips.values())
+        print(f"[generate] 素材段階で捨てた {total} 件の内訳 (素材キー / 理由 — "
+              f"位置差の閾値は {gap}):")
+        for (key, reason), cnt in sorted(early_skips.items(), key=lambda kv: -kv[1]):
+            print(f"  {key} / {reason}: {cnt}")
     if sampler.compat_misses:
         print("[generate] aspect compatibility misses (fell back to full pool):")
         for asp, cnt in sorted(sampler.compat_misses.items(), key=lambda kv: -kv[1]):

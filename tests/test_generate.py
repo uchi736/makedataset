@@ -459,7 +459,7 @@ def test_render_prompt_injects_aspect_examples():
     from rageval.schema import Chunk
 
     _, body = load_prompt("prompts/generate.md")
-    anchors = [Chunk(chunk_id="c0", doc_id="d", text="本規程は所定労働時間を定める。")]
+    anchors = [Chunk(chunk_id="c0", doc_id="d", text="本規程は配管の肉厚検査の周期を定める。")]
     spec = {
         "aspect": "complex_layout",
         "category": "Figure",
@@ -476,6 +476,79 @@ def test_render_prompt_injects_aspect_examples():
     assert any(b in rendered for b in bad)
     # 共通禁止ルールも残っている
     assert "列挙を数えるだけ" in rendered
+
+
+def test_aspect_examples_cover_every_aspect():
+    """作問例の正本は prompts/aspect_examples.md。観点との対応が欠けたら落ちる。
+
+    観点を足して作問例を書き忘れると、その観点だけ誘導が空のまま生成される。
+    片側だけ直した取りこぼしをここで止める (2026-08-08 監査 rank 33)。
+    """
+    from rageval.aspects import ALL_ASPECTS, load_aspect_examples
+
+    ex = load_aspect_examples()
+    assert ex.version, "作問例の版数 (frontmatter) が引けないとバッチを区別できない"
+    for aspect in ALL_ASPECTS:
+        assert ex.good.get(aspect), aspect
+        assert ex.bad.get(aspect), aspect
+
+
+def test_aspect_examples_have_no_retired_corpus_vocabulary():
+    """退役コーパス (就業規則・労務) の語彙が作問例へ戻ったら落ちる。
+
+    2026-07-28 に就業規則コーパスを QA ごと退役させた後も 25観点の作問例だけが
+    労務の語彙で作問を引っ張っていた。対象は法令・規格とプラント技報だけ。
+    """
+    from rageval.aspects import load_aspect_examples
+
+    retired = [
+        "就業規則", "所定労働", "年次有給", "有給休暇", "特別休暇",
+        "正社員", "契約社員", "賃金", "育児休業", "介護休業",
+        "時間外労働", "労働者",
+    ]
+    ex = load_aspect_examples()
+    for aspect in ex.good:
+        for line in list(ex.good[aspect]) + list(ex.bad[aspect]):
+            hit = [w for w in retired if w in line]
+            assert not hit, f"{aspect}: 退役コーパスの語 {hit} — {line}"
+
+
+def test_aspect_good_examples_are_not_exam_style():
+    """良い問いの例に命令形の試験文体が戻ったら落ちる。
+
+    kg 系プロンプトは「〜を答えよ」等を禁じており、general トラックの作問例だけが
+    逆向きに誘導していた。良い例は実務者の依頼文で書く。
+    """
+    from rageval.aspects import load_aspect_examples
+
+    banned = ["答えよ", "述べよ", "列挙せよ", "挙げよ", "導け", "せよ"]
+    ex = load_aspect_examples()
+    for aspect, examples in ex.good.items():
+        for line in examples:
+            hit = [w for w in banned if w in line]
+            assert not hit, f"{aspect}: 試験文体 {hit} — {line}"
+
+
+def test_aspect_examples_incomplete_file_fails_loudly(tmp_path: Path, monkeypatch):
+    """作問例が揃っていない本文は、空のまま素通りさせず落とす (fail-closed)。"""
+    import pytest
+
+    from rageval import aspects
+
+    partial = tmp_path / "aspect_examples.md"
+    partial.write_text(
+        "---\nprompt_version: test_v0\n---\n\n"
+        "## multi_hop\n\n### good\n- ○○を進めたいのですが何に従えばよいですか\n\n"
+        "### bad\n- 1チャンクで完結する単純抽出\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(aspects, "_resolve_examples_path", lambda: partial)
+    aspects.load_aspect_examples.cache_clear()
+    try:
+        with pytest.raises(ValueError):
+            aspects.load_aspect_examples()
+    finally:
+        aspects.load_aspect_examples.cache_clear()
 
 
 def test_generate_batch_with_mock_llm(tmp_path: Path, monkeypatch):
@@ -517,6 +590,109 @@ def test_generate_batch_with_mock_llm(tmp_path: Path, monkeypatch):
         assert qa.business_scenario
         # Confirm prompt was assembled with anchor_chunks_block
         assert "anchors=" in qa.answer
+
+
+# ---------------- 2026-08-08 監査 rank 25: 素材キーの対応表 ----------------
+
+def test_kg_sampler_keys_cover_all_cells():
+    """5型×3未知性の全セルが表に載っていること (裸の else で multi_hop 素材へ倒さない)。"""
+    from rageval.generate import KG_SAMPLER_KEYS, kg_sampler_key
+    from rageval.tracks.kg_poc import ALL_KG_NOVELTY, ALL_KG_QUERY_TYPES
+    cells = {(qt, nov) for qt in ALL_KG_QUERY_TYPES for nov in ALL_KG_NOVELTY}
+    assert set(KG_SAMPLER_KEYS) == cells
+    for qt, nov in cells:
+        assert kg_sampler_key({"kg_query_type": qt, "kg_novelty": nov})
+
+
+def test_kg_sampler_key_single_fact_is_not_quantitative():
+    """回帰: single_fact が既存観点 quantitative_calc を流用して素材を数量系へ
+    絞っていた (chunks_plant 3175→1407)。専用キーを引くこと。"""
+    from rageval.generate import kg_sampler_key
+    from rageval.sampling import ASPECT_COMPATIBILITY
+    for nov in ("unknown_term", "unknown_relation", "procedural_relation"):
+        key = kg_sampler_key({"kg_query_type": "single_fact", "kg_novelty": nov})
+        assert key == "kg_single_fact"
+        assert key in ASPECT_COMPATIBILITY   # 素通りの既定に頼らず明示登録されている
+
+
+def test_kg_sampler_key_unregistered_cell_fails_closed():
+    """表に無いセルは黙って multi_hop の素材で作らず落とすこと。"""
+    import pytest
+    from rageval.generate import kg_sampler_key
+    with pytest.raises(ValueError, match="未登録"):
+        kg_sampler_key({"kg_query_type": "新型", "kg_novelty": "unknown_term"})
+
+
+def test_kg_sampler_keys_point_to_registered_material_keys():
+    """表の値が sampling 側に登録済みの素材キーであること (綴りずれの検出)。"""
+    from rageval.generate import KG_SAMPLER_KEYS
+    from rageval.sampling import ASPECT_COMPATIBILITY
+    for key in set(KG_SAMPLER_KEYS.values()):
+        assert key in ASPECT_COMPATIBILITY, key
+
+
+# ---------------- 2026-08-08 監査 rank 15/26: 早期棄却の位置差と対象戦略 ----------------
+
+def test_early_skip_reason_uses_strategy_gap():
+    """同一文書内の遠隔対の合否が、戦略側の位置差 (唯一の出所) で決まること。
+
+    回帰: 生成本体に直値 10 が写されており、戦略表側だけ動かすと「素材選びは
+    通したのに生成が黙って捨てる」が起きていた。
+    """
+    import rageval.sampling as sampling
+    from rageval.generate import early_skip_reason
+    gap = sampling.same_doc_gap_for("reference_follow")
+    near = [_mk_chunk_v21("d", 0, "t"), _mk_chunk_v21("d", gap - 1, "t")]
+    far = [_mk_chunk_v21("d", 0, "t"), _mk_chunk_v21("d", gap, "t")]
+    assert early_skip_reason("reference_follow", near) == f"単一doc・位置差 {gap - 1} < {gap}"
+    assert early_skip_reason("reference_follow", far) is None
+    original = gap
+    try:
+        sampling.set_min_same_doc_gap(gap - 1)
+        # 戦略側を緩めたら生成側も同時に緩む (三重管理の解消)
+        assert early_skip_reason("reference_follow", near) is None
+    finally:
+        sampling.set_min_same_doc_gap(original)
+
+
+def test_early_skip_reason_strata_are_distinguished():
+    """捨てた理由が層別に分かれること (閾値のせいか素材不良かを切り分けるため)。"""
+    from rageval.generate import early_skip_reason
+    single = [_mk_chunk_v21("d", 0, "t")]
+    assert early_skip_reason("reference_follow", single) == "単一doc・アンカー1件"
+    # 同一文書の遠隔対を認めない戦略 (min_same_doc_gap なし) は位置差では救わない
+    pair = [_mk_chunk_v21("d", 0, "t"), _mk_chunk_v21("d", 999, "t")]
+    assert early_skip_reason("multi_doc_reference", pair) == "単一doc・同一文書の遠隔対を認めない戦略"
+    # 異文書なら成立
+    cross = [_mk_chunk_v21("d1", 0, "t"), _mk_chunk_v21("d2", 0, "t")]
+    assert early_skip_reason("multi_doc_reference", cross) is None
+
+
+def test_generate_batch_reports_dropped_counts(tmp_path, monkeypatch, capsys):
+    """素材段階で捨てた件数を層別にログへ出すこと (黙って削らない)。"""
+    monkeypatch.setattr("rageval.generate.compute_embeddings", lambda chunks: None)
+    monkeypatch.setattr(
+        "rageval.generate._build_spec",
+        lambda rng: {"aspect": "multi_doc_reference", "category": "Integration"},
+    )
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "sample.txt").write_text("単一文書コーパス。跨ぎは作れない。\n", encoding="utf-8")
+    chunks_dir = tmp_path / "chunks"
+    chunk_directory(docs_dir, chunks_dir)
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text("[]", encoding="utf-8")
+
+    generate_batch(
+        chunks_dir=chunks_dir, out_dir=tmp_path / "raw", n=2, model="mock",
+        seeds_path=seeds, llm=_mock_llm,
+        anchor_pairs_path=None, doc_aliases_path=None, standard_prefixes_path=None,
+    )
+    out = capsys.readouterr().out
+    assert "素材段階で捨てた 2 件の内訳" in out
+    assert "multi_doc_reference / コーパスが組成を作れず: 2" in out
+    # 採用した位置差も実行時に出す
+    assert "同一文書内の遠隔参照とみなす位置差" in out
 
 
 # ---------------- v2.1: 接続根拠ブロック ----------------
