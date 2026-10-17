@@ -5,6 +5,7 @@
 1コマンドずつ実行できる。
 
 設計の根拠は [rag_eval_dataset_plan.md](rag_eval_dataset_plan.md) / [rag_eval_dataset_r1_plan.md](rag_eval_dataset_r1_plan.md) を参照。
+観点が公開ベンチマーク (Fujitsu RAG Hard Benchmark / LIT-RAGBench / GraphRAG 系) とどう対応するかは [観点の文献的妥当性調査.md](観点の文献的妥当性調査.md) を参照。
 
 ---
 
